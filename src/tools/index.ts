@@ -10,6 +10,7 @@ import { assetTools } from './asset-tools.js';
 import { visualizerTools } from './visualizer-tools.js';
 import { runtimeTools } from './runtime-tools.js';
 import { deploymentTools } from './deployment-tools.js';
+import { ggscaleTools } from './ggscale-tools.js';
 import type { ToolDefinition } from '../types.js';
 
 export const allTools: ToolDefinition[] = [
@@ -21,6 +22,7 @@ export const allTools: ToolDefinition[] = [
   ...visualizerTools,
   ...runtimeTools,
   ...deploymentTools,
+  ...ggscaleTools,
 ];
 
 export function toolExists(toolName: string): boolean {

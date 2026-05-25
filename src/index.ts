@@ -1481,6 +1481,470 @@ async function handleFsTool(name: string, args: any): Promise<any> {
         return { error: `Vercel deployment failed: ${err.message}` };
       }
     }
+    case 'ggscale_manage_server': {
+      try {
+        const action = args.action;
+        const relativePath = args.path || '../gg-scale-main';
+        const ggscalePath = resolve(PROJECT_ROOT, relativePath);
+
+        if (!existsSync(ggscalePath)) {
+          return { error: `gg-scale directory not found at resolved path: ${ggscalePath}` };
+        }
+
+        const composeFile = join(ggscalePath, 'docker-compose.yml');
+        if (!existsSync(composeFile)) {
+          return { error: `docker-compose.yml not found in: ${ggscalePath}` };
+        }
+
+        if (action === 'status') {
+          let composeStatus = '';
+          try {
+            const { stdout } = await execFileAsync('docker', ['compose', 'ps', '--format', 'json'], { cwd: ggscalePath, timeout: 5000 });
+            composeStatus = stdout;
+          } catch (e: any) {
+            try {
+              const { stdout } = await execFileAsync('docker', ['compose', 'ps'], { cwd: ggscalePath, timeout: 5000 });
+              composeStatus = stdout;
+            } catch (e2: any) {
+              composeStatus = `Failed to query docker compose: ${e2.message}`;
+            }
+          }
+
+          let apiHealth = 'unreachable';
+          try {
+            const healthRes = await fetch('http://localhost:8080/v1/healthz', { signal: AbortSignal.timeout(2000) });
+            if (healthRes.ok) {
+              const text = await healthRes.text();
+              apiHealth = `healthy (${text.trim()})`;
+            } else {
+              apiHealth = `status ${healthRes.status}`;
+            }
+          } catch (e: any) {
+            apiHealth = `unreachable (${e.message})`;
+          }
+
+          return {
+            success: true,
+            status: {
+              dockerCompose: composeStatus,
+              apiEndpoint: apiHealth
+            }
+          };
+        } else if (action === 'stop') {
+          gessoLog('info', SERVER_NAME, 'Stopping gg-scale server...');
+          const { stdout, stderr } = await execFileAsync('docker', ['compose', 'down'], { cwd: ggscalePath, timeout: 30000 });
+          return {
+            success: true,
+            message: 'gg-scale server stopped successfully.',
+            stdout,
+            stderr
+          };
+        } else if (action === 'start') {
+          let dockerRunning = false;
+          try {
+            await execFileAsync('docker', ['info'], { timeout: 5000 });
+            dockerRunning = true;
+          } catch (e) {
+            // Docker daemon not running
+          }
+
+          if (!dockerRunning) {
+            if (process.platform === 'win32') {
+              const dockerDesktopPath = 'C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe';
+              if (existsSync(dockerDesktopPath)) {
+                gessoLog('info', SERVER_NAME, 'Docker Desktop is not running. Launching it...');
+                execFile('cmd.exe', ['/c', 'start', '', dockerDesktopPath]);
+                gessoLog('info', SERVER_NAME, 'Waiting 15 seconds for Docker Desktop daemon to initialize...');
+                await new Promise((r) => setTimeout(r, 15000));
+              } else {
+                return { error: 'Docker daemon is not running and Docker Desktop was not found at standard path. Please start Docker Desktop.' };
+              }
+            } else {
+              return { error: 'Docker daemon is not running. Please start docker service.' };
+            }
+          }
+
+          gessoLog('info', SERVER_NAME, 'Starting gg-scale stack via docker compose...');
+          const { stdout, stderr } = await execFileAsync('docker', ['compose', 'up', '-d', '--build', '--wait'], { cwd: ggscalePath, timeout: 120000 });
+          
+          return {
+            success: true,
+            message: 'gg-scale server started successfully in background.',
+            stdout,
+            stderr
+          };
+        }
+      } catch (err: any) {
+        return { error: `gg-scale server command failed: ${err.message}` };
+      }
+    }
+    case 'ggscale_bootstrap_tenant': {
+      try {
+        const relativePath = args.path || '../gg-scale-main';
+        const ggscalePath = resolve(PROJECT_ROOT, relativePath);
+        const tokenFile = join(ggscalePath, 'data', 'bootstrap.token');
+
+        if (!existsSync(tokenFile)) {
+          try {
+            const healthRes = await fetch('http://localhost:8080/v1/healthz', { signal: AbortSignal.timeout(2000) });
+            if (healthRes.ok) {
+              return { error: 'bootstrap.token file not found. If you have already bootstrapped the server, you can configure Godot directly with your existing key.' };
+            }
+          } catch (e) {}
+          return { error: `bootstrap.token file not found at: ${tokenFile}. Ensure the server is running and data volume is correctly mounted.` };
+        }
+
+        const token = readFileSync(tokenFile, 'utf8').trim();
+        const email = args.email || 'admin@ggscale.local';
+        const password = args.password || 'adminPassword123!';
+        const tenantName = args.tenant_name || args.tenantName || 'Default Tenant';
+        const projectName = args.project_name || args.projectName || 'dev';
+        const keyLabel = 'Gesso Key';
+
+        const url = 'http://localhost:8080';
+        gessoLog('info', SERVER_NAME, `Bootstrapping platform admin with token: ${token.substring(0, 8)}...`);
+
+        const setupForm = new URLSearchParams();
+        setupForm.append('bootstrap_token', token);
+        setupForm.append('email', email);
+        setupForm.append('password', password);
+
+        const setupRes = await fetch(`${url}/v1/dashboard/setup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: setupForm.toString(),
+          redirect: 'manual'
+        });
+
+        gessoLog('info', SERVER_NAME, `Logging in to dashboard as ${email}...`);
+        const loginForm = new URLSearchParams();
+        loginForm.append('email', email);
+        loginForm.append('password', password);
+
+        const loginRes = await fetch(`${url}/v1/dashboard/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: loginForm.toString(),
+          redirect: 'manual'
+        });
+
+        const cookieHeader = loginRes.headers.get('set-cookie');
+        if (!cookieHeader) {
+          return { error: `Failed to retrieve session cookie from login. Setup status: ${setupRes.status}, Login status: ${loginRes.status}` };
+        }
+
+        gessoLog('info', SERVER_NAME, 'Fetching dashboard to extract CSRF token...');
+        const dashRes = await fetch(`${url}/v1/dashboard`, {
+          headers: { 'Cookie': cookieHeader }
+        });
+        const dashHtml = await dashRes.text();
+        const csrfMatch = dashHtml.match(/name="_csrf" value="([^"]+)"/);
+        if (!csrfMatch) {
+          return { error: 'Failed to extract CSRF token from dashboard page. Make sure the dashboard is mounted and enabled.' };
+        }
+        const csrfToken = csrfMatch[1];
+
+        gessoLog('info', SERVER_NAME, `Creating tenant "${tenantName}" and project "${projectName}"...`);
+        const tenantForm = new URLSearchParams();
+        tenantForm.append('_csrf', csrfToken);
+        tenantForm.append('tenant_name', tenantName);
+        tenantForm.append('project_name', projectName);
+        tenantForm.append('label', keyLabel);
+
+        const createRes = await fetch(`${url}/v1/dashboard/tenants`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Cookie': cookieHeader
+          },
+          body: tenantForm.toString()
+        });
+        const createHtml = await createRes.text();
+        const apiKeyMatch = createHtml.match(/ggs_[A-Za-z0-9_-]+/);
+        if (!apiKeyMatch) {
+          return { error: 'Failed to extract API Key from dashboard response. Ensure tenant name is unique.' };
+        }
+        const apiKey = apiKeyMatch[0];
+
+        return {
+          success: true,
+          message: 'gg-scale dashboard successfully bootstrapped and configured.',
+          credentials: {
+            email,
+            password
+          },
+          tenant: tenantName,
+          project: projectName,
+          api_key: apiKey
+        };
+      } catch (err: any) {
+        return { error: `Failed to bootstrap tenant: ${err.message}` };
+      }
+    }
+    case 'ggscale_configure_godot': {
+      try {
+        const projectPath = args.project_path || args.projectPath;
+        const apiKey = args.api_key || args.apiKey;
+        const serverUrl = args.server_url || args.serverUrl || 'http://localhost:8080';
+
+        const absProjPath = projectPath.startsWith('res://')
+          ? join(PROJECT_ROOT, projectPath.substring(6))
+          : resolve(PROJECT_ROOT, projectPath);
+
+        if (!existsSync(absProjPath)) {
+          return { error: `Godot project path not found: ${projectPath}` };
+        }
+
+        const projectGodot = join(absProjPath, 'project.godot');
+        if (!existsSync(projectGodot)) {
+          return { error: `Not a valid Godot project: project.godot not found in: ${absProjPath}` };
+        }
+
+        const ggscaleScriptPath = join(absProjPath, 'ggscale.gd');
+        const scriptContent = `extends Node
+
+# ggscale Multiplayer client SDK for Godot 4
+# Automatically configured by Gesso
+
+const SERVER_URL = "${serverUrl}"
+const API_KEY = "${apiKey}"
+
+var session_token: String = ""
+var end_user_id: int = 0
+
+signal auth_completed(success: bool, session_token: String)
+signal profile_loaded(profile_data: Dictionary)
+signal score_submitted(leaderboard: String, success: bool)
+signal matchmaking_matched(match_address: String)
+signal matchmaking_failed(reason: String)
+
+func _ready():
+	pass
+
+# Helper to execute HTTP Requests dynamically
+func _make_request(endpoint: String, method: HTTPClient.Method, body: Dictionary = {}, use_session: bool = false) -> Dictionary:
+	var http_request = HTTPRequest.new()
+	add_child(http_request)
+	
+	var headers = [
+		"Content-Type: application/json",
+		"Authorization: Bearer " + API_KEY
+	]
+	
+	if use_session and session_token != "":
+		headers.append("X-Session-Token: " + session_token)
+		
+	var query = JSON.stringify(body) if not body.is_empty() else ""
+	
+	var err = http_request.request(SERVER_URL + endpoint, headers, method, query)
+	if err != OK:
+		http_request.queue_free()
+		return {"error": "Failed to initiate request"}
+		
+	var result = await http_request.request_completed
+	var response_code = result[1]
+	var response_headers = result[2]
+	var response_body = result[3].get_string_from_utf8()
+	
+	http_request.queue_free()
+	
+	var json = JSON.new()
+	var parse_err = json.parse(response_body)
+	var data = {}
+	if parse_err == OK:
+		if json.get_data() is Dictionary:
+			data = json.get_data()
+		elif json.get_data() is Array:
+			data = {"list": json.get_data()}
+	else:
+		data = {"raw": response_body}
+		
+	if response_code >= 400:
+		data["error_code"] = response_code
+		if not data.has("error"):
+			data["error"] = "HTTP status code: " + str(response_code)
+			
+	return data
+
+# --- AUTHENTICATION ---
+
+func anonymous_login() -> Dictionary:
+	var res = await _make_request("/v1/auth/anonymous", HTTPClient.METHOD_POST)
+	if res.has("session_token"):
+		session_token = res["session_token"]
+		if res.has("end_user_id"):
+			end_user_id = int(res["end_user_id"])
+		auth_completed.emit(true, session_token)
+	else:
+		auth_completed.emit(false, "")
+	return res
+
+func signup(email: String, password: String) -> Dictionary:
+	var res = await _make_request("/v1/auth/signup", HTTPClient.METHOD_POST, {
+		"email": email,
+		"password": password
+	})
+	return res
+
+func login(email: String, password: String) -> Dictionary:
+	var res = await _make_request("/v1/auth/login", HTTPClient.METHOD_POST, {
+		"email": email,
+		"password": password
+	})
+	if res.has("session_token"):
+		session_token = res["session_token"]
+		if res.has("end_user_id"):
+			end_user_id = int(res["end_user_id"])
+		auth_completed.emit(true, session_token)
+	else:
+		auth_completed.emit(false, "")
+	return res
+
+# --- PROFILE & STORAGE ---
+
+func get_profile() -> Dictionary:
+	return await _make_request("/v1/profile", HTTPClient.METHOD_GET, {}, true)
+
+func save_profile(profile_data: Dictionary) -> Dictionary:
+	return await _make_request("/v1/profile", HTTPClient.METHOD_PATCH, profile_data, true)
+
+func get_storage_objects() -> Dictionary:
+	return await _make_request("/v1/storage/objects", HTTPClient.METHOD_GET, {}, true)
+
+func save_storage_object(key: String, value: Dictionary) -> Dictionary:
+	return await _make_request("/v1/storage/objects/" + key, HTTPClient.METHOD_PUT, value, true)
+
+func delete_storage_object(key: String) -> bool:
+	var res = await _make_request("/v1/storage/objects/" + key, HTTPClient.METHOD_DELETE, {}, true)
+	return not res.has("error")
+
+# --- LEADERBOARDS ---
+
+func get_leaderboard(leaderboard_id: String) -> Dictionary:
+	return await _make_request("/v1/leaderboards/" + leaderboard_id + "/top", HTTPClient.METHOD_GET, {}, true)
+
+func submit_score(leaderboard_id: String, score: int) -> Dictionary:
+	var res = await _make_request("/v1/leaderboards/" + leaderboard_id + "/scores", HTTPClient.METHOD_POST, {
+		"score": score
+	}, true)
+	score_submitted.emit(leaderboard_id, not res.has("error"))
+	return res
+
+# --- MATCHMAKING ---
+
+func create_matchmaker_ticket(fleet_name: String, region: String = "local", game_mode: String = "default", attributes: Dictionary = {}) -> Dictionary:
+	return await _make_request("/v1/matchmaker/tickets", HTTPClient.METHOD_POST, {
+		"fleet": fleet_name,
+		"region": region,
+		"game_mode": game_mode,
+		"attributes": attributes
+	}, true)
+
+func get_matchmaker_ticket(ticket_id: int) -> Dictionary:
+	return await _make_request("/v1/matchmaker/tickets/" + str(ticket_id), HTTPClient.METHOD_GET, {}, true)
+
+func cancel_matchmaker_ticket(ticket_id: int) -> bool:
+	var res = await _make_request("/v1/matchmaker/tickets/" + str(ticket_id), HTTPClient.METHOD_DELETE, {}, true)
+	return not res.has("error")
+
+# Poll a ticket until match is found, cancelled, or failed
+func poll_matchmaking_ticket(ticket_id: int, interval_sec: float = 2.0, max_attempts: int = 30) -> String:
+	for attempt in range(max_attempts):
+		await get_tree().create_timer(interval_sec).timeout
+		var ticket = await get_matchmaker_ticket(ticket_id)
+		if ticket.has("error"):
+			matchmaking_failed.emit(ticket["error"])
+			return ""
+			
+		var status = ticket.get("status", "")
+		if status == "matched":
+			var match_addr = ticket.get("match_address", "")
+			matchmaking_matched.emit(match_addr)
+			return match_addr
+		elif status == "failed" or status == "cancelled":
+			matchmaking_failed.emit("Ticket is in terminal state: " + status)
+			return ""
+			
+	matchmaking_failed.emit("Matchmaking timeout")
+	return ""
+`;
+
+        writeFileSync(ggscaleScriptPath, scriptContent);
+        gessoLog('info', SERVER_NAME, `Created ggscale.gd at: ${ggscaleScriptPath}`);
+
+        let projectGodotContent = readFileSync(projectGodot, 'utf8');
+        if (!projectGodotContent.includes('GgScale=')) {
+          if (projectGodotContent.includes('[autoload]')) {
+            projectGodotContent = projectGodotContent.replace('[autoload]', '[autoload]\n\nGgScale="*res://ggscale.gd"');
+          } else {
+            projectGodotContent += '\n\n[autoload]\n\nGgScale="*res://ggscale.gd"';
+          }
+          writeFileSync(projectGodot, projectGodotContent);
+          gessoLog('info', SERVER_NAME, 'Registered GgScale Autoload in project.godot');
+        }
+
+        const demoScriptPath = join(absProjPath, 'ggscale_demo.gd');
+        const demoScriptContent = `extends Node2D
+
+func _ready():
+	print("--- ggscale Multiplayer Client Quickstart ---")
+	GgScale.auth_completed.connect(_on_auth_completed)
+	GgScale.matchmaking_matched.connect(_on_match_matched)
+	GgScale.matchmaking_failed.connect(_on_match_failed)
+	print("Connecting to gg-scale backend and logging in anonymously...")
+	GgScale.anonymous_login()
+
+func _on_auth_completed(success: bool, token: String):
+	if success:
+		print("Login successful! Session Token: ", token.left(15) + "...")
+		print("Saving user profile...")
+		var profile_res = await GgScale.save_profile({
+			"display_name": "Player_" + str(randi() % 1000),
+			"avatar_url": ""
+		})
+		print("Profile Saved: ", profile_res)
+		print("Saving multiplayer save data...")
+		var save_res = await GgScale.save_storage_object("save_data", {
+			"xp": 100,
+			"gold": 50,
+			"items": ["sword", "shield"]
+		})
+		print("Storage Saved: ", save_res)
+		print("Submitting highscore to 'top_score' leaderboard...")
+		var score_res = await GgScale.submit_score("top_score", 1500)
+		print("Score Submitted: ", score_res)
+		print("Creating matchmaker ticket for 'doomerang' fleet...")
+		var ticket_res = await GgScale.create_matchmaker_ticket("doomerang", "local", "default")
+		if ticket_res.has("id"):
+			var ticket_id = int(ticket_res["id"])
+			print("Ticket created! ID: ", ticket_id, ". Polling for matched game server...")
+			var match_addr = await GgScale.poll_matchmaking_ticket(ticket_id)
+			if match_addr != "":
+				print("MATCH FOUND! Server Address: ", match_addr)
+		else:
+			print("Failed to create ticket: ", ticket_res)
+	else:
+		print("Login failed. Check server status or API key configuration.")
+
+func _on_match_matched(address: String):
+	print("Lobby matched successfully at: ", address)
+
+func _on_match_failed(reason: String):
+	print("Matchmaking failed: ", reason)
+`;
+        writeFileSync(demoScriptPath, demoScriptContent);
+        gessoLog('info', SERVER_NAME, `Created ggscale_demo.gd quickstart script at: ${demoScriptPath}`);
+
+        return {
+          success: true,
+          message: 'Godot project configured for gg-scale successfully.',
+          autoload: 'res://ggscale.gd',
+          demo_script: 'res://ggscale_demo.gd'
+        };
+      } catch (err: any) {
+        return { error: `Failed to configure Godot project: ${err.message}` };
+      }
+    }
     default:
       return null;
   }
