@@ -9,6 +9,7 @@ import { projectTools } from './project-tools.js';
 import { assetTools } from './asset-tools.js';
 import { visualizerTools } from './visualizer-tools.js';
 import { runtimeTools } from './runtime-tools.js';
+import { deploymentTools } from './deployment-tools.js';
 import type { ToolDefinition } from '../types.js';
 
 export const allTools: ToolDefinition[] = [
@@ -19,9 +20,11 @@ export const allTools: ToolDefinition[] = [
   ...assetTools,
   ...visualizerTools,
   ...runtimeTools,
+  ...deploymentTools,
 ];
 
 export function toolExists(toolName: string): boolean {
   return allTools.some(t => t.name === toolName);
 }
+
 

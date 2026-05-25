@@ -15,11 +15,12 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 import { fileURLToPath } from 'url';
-import { dirname, join, normalize } from 'path';
-import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, renameSync, createWriteStream } from 'fs';
+import { dirname, join, normalize, resolve, extname } from 'path';
+import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, renameSync, createWriteStream, rmSync } from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { Readable } from 'stream';
+import { createServer } from 'http';
 
 import { allTools, toolExists } from './tools/index.js';
 import { EditorBridge } from './editor-bridge.js';
@@ -36,7 +37,306 @@ import {
   gessoLog,
 } from './utils.js';
 
+const DEFAULT_PRESETS: Record<string, { platform: string, name: string, export_path: string, options: Record<string, any> }> = {
+  windows: {
+    platform: 'Windows Desktop',
+    name: 'Windows Desktop',
+    export_path: 'build/windows/game.exe',
+    options: {
+      'custom_template/debug': '',
+      'custom_template/release': '',
+      'binary_format/embed_pck': false,
+      'texture_format/bptc': true,
+      'texture_format/s3tc': true,
+      'texture_format/etc2': true,
+      'texture_format/astc': true,
+      'binary_format/architecture': 'x86_64',
+      'codesign/enable': false,
+      'codesign/identity': '',
+      'codesign/password': '',
+      'codesign/timestamp': true,
+      'codesign/timestamp_server_url': '',
+      'codesign/digest_algorithm': 1,
+      'codesign/description': '',
+      'codesign/url': '',
+      'application/icon': '',
+      'application/console_wrapper_icon': '',
+      'application/icon_interpolated': true,
+      'application/file_version': '',
+      'application/product_version': '',
+      'application/company_name': '',
+      'application/product_name': '',
+      'application/file_description': '',
+      'application/copyright': '',
+      'application/trademarks': '',
+      'ssh_remote_deploy/enabled': false,
+      'ssh_remote_deploy/host': '',
+      'ssh_remote_deploy/port': '22',
+      'ssh_remote_deploy/user': '',
+      'ssh_remote_deploy/password': '',
+      'ssh_remote_deploy/private_key_path': '',
+      'ssh_remote_deploy/extra_args_ssh': '',
+      'ssh_remote_deploy/extra_args_scp': '',
+      'ssh_remote_deploy/run_script': ''
+    }
+  },
+  linux: {
+    platform: 'Linux/X11',
+    name: 'Linux/X11',
+    export_path: 'build/linux/game.x86_64',
+    options: {
+      'custom_template/debug': '',
+      'custom_template/release': '',
+      'binary_format/embed_pck': false,
+      'texture_format/bptc': true,
+      'texture_format/s3tc': true,
+      'texture_format/etc2': true,
+      'texture_format/astc': true,
+      'binary_format/architecture': 'x86_64',
+      'ssh_remote_deploy/enabled': false,
+      'ssh_remote_deploy/host': '',
+      'ssh_remote_deploy/port': '22',
+      'ssh_remote_deploy/user': '',
+      'ssh_remote_deploy/password': '',
+      'ssh_remote_deploy/private_key_path': '',
+      'ssh_remote_deploy/extra_args_ssh': '',
+      'ssh_remote_deploy/extra_args_scp': '',
+      'ssh_remote_deploy/run_script': ''
+    }
+  },
+  mac: {
+    platform: 'macOS',
+    name: 'macOS',
+    export_path: 'build/mac/game.zip',
+    options: {
+      'custom_template/debug': '',
+      'custom_template/release': '',
+      'binary_format/embed_pck': false,
+      'texture_format/bptc': true,
+      'texture_format/s3tc': true,
+      'texture_format/etc2': true,
+      'texture_format/astc': true,
+      'codesign/enable': false,
+      'codesign/identity': '',
+      'codesign/password': '',
+      'codesign/timestamp': true,
+      'codesign/timestamp_server_url': '',
+      'codesign/digest_algorithm': 1,
+      'codesign/description': '',
+      'codesign/url': '',
+      'application/icon': '',
+      'application/file_version': '',
+      'application/product_version': '',
+      'application/company_name': '',
+      'application/product_name': '',
+      'application/file_description': '',
+      'application/copyright': '',
+      'application/trademarks': '',
+      'ssh_remote_deploy/enabled': false,
+      'ssh_remote_deploy/host': '',
+      'ssh_remote_deploy/port': '22',
+      'ssh_remote_deploy/user': '',
+      'ssh_remote_deploy/password': '',
+      'ssh_remote_deploy/private_key_path': '',
+      'ssh_remote_deploy/extra_args_ssh': '',
+      'ssh_remote_deploy/extra_args_scp': '',
+      'ssh_remote_deploy/run_script': ''
+    }
+  },
+  android: {
+    platform: 'Android',
+    name: 'Android',
+    export_path: 'build/android/game.apk',
+    options: {
+      'custom_template/debug': '',
+      'custom_template/release': '',
+      'gradle_build/use_gradle_build': false,
+      'architectures/armeabi-v7a': true,
+      'architectures/arm64-v8a': true,
+      'architectures/x86': true,
+      'architectures/x86_64': true,
+      'version/code': 1,
+      'version/name': '1.0',
+      'package/unique_name': 'com.example.game',
+      'package/name': 'My Game',
+      'package/signed': true,
+      'keystore/debug': '',
+      'keystore/debug_user': '',
+      'keystore/debug_password': '',
+      'keystore/release': '',
+      'keystore/release_user': '',
+      'keystore/release_password': '',
+      'xr_features/xr_mode': 0
+    }
+  },
+  ios: {
+    platform: 'iOS',
+    name: 'iOS',
+    export_path: 'build/ios/game.ipa',
+    options: {
+      'custom_template/debug': '',
+      'custom_template/release': '',
+      'architectures/arm64': true,
+      'version/code': 1,
+      'version/name': '1.0',
+      'package/bundle_identifier': 'com.example.game',
+      'package/name': 'My Game',
+      'capabilities/arkit': false,
+      'user_interface/ipad_support': true,
+      'user_interface/iphone_support': true
+    }
+  },
+  web: {
+    platform: 'Web',
+    name: 'Web',
+    export_path: 'build/web/index.html',
+    options: {
+      'custom_template/debug': '',
+      'custom_template/release': '',
+      'variant/extensions_support': false,
+      'vram_texture_compression/import_s3tc_bptc': true,
+      'vram_texture_compression/import_etc2_astc': false,
+      'html/export_icon': true,
+      'html/custom_html_shell': '',
+      'html/head_include': '',
+      'html/canvas_resize_policy': 2,
+      'html/focus_canvas_on_start': true,
+      'html/experimental_virtual_keyboard': false,
+      'progressive_web_app/enabled': false,
+      'progressive_web_app/offline_page': '',
+      'progressive_web_app/display': 1,
+      'progressive_web_app/orientation': 0,
+      'progressive_web_app/icon_144x144': '',
+      'progressive_web_app/icon_180x180': '',
+      'progressive_web_app/icon_512x512': '',
+      'progressive_web_app/background_color': 'ffffff'
+    }
+  }
+};
+
+function parseValue(val: string): any {
+  if (val.startsWith('"') && val.endsWith('"')) {
+    return val.substring(1, val.length - 1);
+  }
+  if (val === 'true') return true;
+  if (val === 'false') return false;
+  if (/^\d+$/.test(val)) return parseInt(val, 10);
+  if (/^\d+\.\d+$/.test(val)) return parseFloat(val);
+  return val;
+}
+
+function parseExportPresets(content: string): any[] {
+  const lines = content.split(/\r?\n/);
+  const presets: any[] = [];
+  let currentSection = '';
+  let currentPreset: any = null;
+
+  for (let line of lines) {
+    line = line.trim();
+    if (!line || line.startsWith(';')) continue;
+    if (line.startsWith('[') && line.endsWith(']')) {
+      currentSection = line.slice(1, -1);
+      if (currentSection.startsWith('preset.') && !currentSection.endsWith('.options')) {
+        currentPreset = {
+          id: currentSection,
+          name: '',
+          platform: '',
+          runnable: false,
+          dedicated_server: false,
+          custom_features: '',
+          export_filter: 'all_resources',
+          include_filter: '',
+          exclude_filter: '',
+          export_path: '',
+          encryption_include_filters: '',
+          encryption_exclude_filters: '',
+          encrypt_pck: false,
+          encrypt_directory: false,
+          options: {}
+        };
+        presets.push(currentPreset);
+      }
+    } else if (currentSection.startsWith('preset.')) {
+      const eqIdx = line.indexOf('=');
+      if (eqIdx !== -1) {
+        const key = line.substring(0, eqIdx).trim();
+        const val = parseValue(line.substring(eqIdx + 1).trim());
+        
+        if (currentSection.endsWith('.options')) {
+          const presetId = currentSection.slice(0, -'.options'.length);
+          const preset = presets.find(p => p.id === presetId);
+          if (preset) {
+            preset.options[key] = val;
+          }
+        } else {
+          if (currentPreset) {
+            currentPreset[key] = val;
+          }
+        }
+      }
+    }
+  }
+  return presets;
+}
+
+function serializeExportPresets(presets: any[]): string {
+  let out = '';
+  presets.forEach(p => {
+    out += `[${p.id}]\n\n`;
+    Object.keys(p).forEach(key => {
+      if (key === 'id' || key === 'options') return;
+      const val = p[key];
+      if (typeof val === 'boolean') {
+        out += `${key}=${val}\n`;
+      } else if (typeof val === 'number') {
+        out += `${key}=${val}\n`;
+      } else {
+        out += `${key}="${val}"\n`;
+      }
+    });
+    out += `\n[${p.id}.options]\n\n`;
+    Object.keys(p.options).forEach(key => {
+      const val = p.options[key];
+      if (typeof val === 'boolean') {
+        out += `${key}=${val}\n`;
+      } else if (typeof val === 'number') {
+        out += `${key}=${val}\n`;
+      } else {
+        out += `${key}="${val}"\n`;
+      }
+    });
+    out += `\n`;
+  });
+  return out;
+}
+
+async function detectAdbPath(): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('adb', ['--version'], { timeout: 2000 });
+    if (stdout.trim().length > 0) return 'adb';
+  } catch {}
+
+  if (process.platform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA || join(process.env.USERPROFILE || 'C:\\Users\\chibu', 'AppData', 'Local');
+    const sdkPath = join(localAppData, 'Android', 'Sdk', 'platform-tools', 'adb.exe');
+    if (existsSync(sdkPath)) return sdkPath;
+  } else {
+    const home = process.env.HOME || '';
+    const possiblePaths = [
+      join(home, 'Android', 'Sdk', 'platform-tools', 'adb'),
+      join(home, 'Library', 'Android', 'sdk', 'platform-tools', 'adb'),
+      '/usr/bin/adb',
+      '/usr/local/bin/adb'
+    ];
+    for (const p of possiblePaths) {
+      if (existsSync(p)) return p;
+    }
+  }
+  return null;
+}
+
 const execFileAsync = promisify(execFile);
+
 
 // Derive paths
 const __filename = fileURLToPath(import.meta.url);
@@ -87,6 +387,8 @@ async function executeHeadlessOperation(
   const { stdout, stderr } = await execFileAsync(godotPath, args, { timeout: 15000 });
   return { stdout, stderr };
 }
+
+const activeWebServers = new Map<number, any>();
 
 // Handler for direct Node-based filesystem operations (extremely fast fallback)
 async function handleFsTool(name: string, args: any): Promise<any> {
@@ -404,6 +706,781 @@ async function handleFsTool(name: string, args: any): Promise<any> {
         return { error: `Download failed: ${err.message}` };
       }
     }
+    case 'list_export_presets': {
+      try {
+        const presetsPath = join(PROJECT_ROOT, 'export_presets.cfg');
+        if (!existsSync(presetsPath)) {
+          return { presets: [], message: 'No export_presets.cfg file found in project root.' };
+        }
+        const content = readFileSync(presetsPath, 'utf8');
+        const presets = parseExportPresets(content);
+        return { presets };
+      } catch (err: any) {
+        return { error: `Failed to list export presets: ${err.message}` };
+      }
+    }
+    case 'configure_export_preset': {
+      try {
+        const platform = args.platform;
+        if (!platform || !DEFAULT_PRESETS[platform]) {
+          return { error: `Unsupported or invalid platform: "${platform}". Supported platforms: windows, mac, linux, android, ios` };
+        }
+
+        const presetName = args.preset_name || args.presetName || DEFAULT_PRESETS[platform].name;
+        const exportPath = args.export_path || args.exportPath || DEFAULT_PRESETS[platform].export_path;
+        const packageName = args.package_name || args.packageName;
+        const customOptions = args.options;
+
+        const presetsPath = join(PROJECT_ROOT, 'export_presets.cfg');
+        let presets: any[] = [];
+        if (existsSync(presetsPath)) {
+          const content = readFileSync(presetsPath, 'utf8');
+          presets = parseExportPresets(content);
+        }
+
+        let existing = presets.find(p => p.name === presetName);
+        let action = 'updated';
+
+        const applyOverrides = (presetObj: any) => {
+          if (packageName) {
+            if (platform === 'android') {
+              presetObj.options['package/unique_name'] = packageName;
+            } else if (platform === 'ios') {
+              presetObj.options['package/bundle_identifier'] = packageName;
+            }
+          }
+          if (customOptions && typeof customOptions === 'object') {
+            Object.assign(presetObj.options, customOptions);
+          }
+        };
+
+        if (existing) {
+          existing.export_path = exportPath;
+          applyOverrides(existing);
+        } else {
+          action = 'created';
+          const defaults = DEFAULT_PRESETS[platform];
+          const newPreset = {
+            id: `preset.${presets.length}`,
+            name: presetName,
+            platform: defaults.platform,
+            runnable: true,
+            dedicated_server: false,
+            custom_features: '',
+            export_filter: 'all_resources',
+            include_filter: '',
+            exclude_filter: '',
+            export_path: exportPath,
+            encryption_include_filters: '',
+            encryption_exclude_filters: '',
+            encrypt_pck: false,
+            encrypt_directory: false,
+            options: { ...defaults.options }
+          };
+          applyOverrides(newPreset);
+          presets.push(newPreset);
+        }
+
+        const newContent = serializeExportPresets(presets);
+        writeFileSync(presetsPath, newContent, 'utf8');
+
+        return {
+          success: true,
+          preset_name: presetName,
+          export_path: exportPath,
+          action
+        };
+      } catch (err: any) {
+        return { error: `Failed to configure export preset: ${err.message}` };
+      }
+    }
+    case 'export_game': {
+      try {
+        const preset = args.preset;
+        const outputPath = args.output_path || args.outputPath;
+        const debug = args.debug === true;
+
+        if (!preset) return { error: 'Preset name is required' };
+        if (!outputPath) return { error: 'Output path is required' };
+
+        const absOutputPath = outputPath.startsWith('res://')
+          ? join(PROJECT_ROOT, outputPath.substring(6))
+          : resolve(PROJECT_ROOT, outputPath);
+
+        if (!validatePath(absOutputPath)) {
+          return { error: `Invalid output path: ${outputPath}` };
+        }
+
+        const parentDir = dirname(absOutputPath);
+        if (!existsSync(parentDir)) {
+          mkdirSync(parentDir, { recursive: true });
+        }
+
+        if (!godotPath) {
+          godotPath = await detectGodotPath(PROJECT_ROOT);
+          if (!godotPath) {
+            return { error: 'Could not find a valid Godot executable path. Make sure Godot is installed or set GODOT_PATH.' };
+          }
+        }
+
+        const exportFlag = debug ? '--export-debug' : '--export-release';
+        const argsList = [
+          '--headless',
+          '--path', PROJECT_ROOT,
+          exportFlag, preset, absOutputPath
+        ];
+
+        gessoLog('info', SERVER_NAME, `Exporting game using: ${godotPath} ${argsList.join(' ')}`);
+        
+        // Pass APPDATA/HOME environment variables so Godot knows where templates are located
+        const exportEnv = {
+          ...process.env,
+          APPDATA: process.env.APPDATA || join(process.env.USERPROFILE || `C:\\Users\\${process.env.USERNAME || 'chibu'}`, 'AppData', 'Roaming'),
+          HOME: process.env.HOME || process.env.USERPROFILE || `C:\\Users\\${process.env.USERNAME || 'chibu'}`
+        };
+
+        try {
+          const { stdout, stderr } = await execFileAsync(godotPath, argsList, { env: exportEnv, timeout: 120000 });
+          return {
+            success: true,
+            preset,
+            output_path: outputPath,
+            stdout,
+            stderr
+          };
+        } catch (execErr: any) {
+          return {
+            success: false,
+            error: execErr.message,
+            stdout: execErr.stdout,
+            stderr: execErr.stderr
+          };
+        }
+      } catch (err: any) {
+        return { error: `Export failed: ${err.message}` };
+      }
+    }
+    case 'deploy_to_itch': {
+      try {
+        const buildPath = args.build_path || args.buildPath;
+        const target = args.target;
+        const butler = args.butler_path || args.butlerPath || 'butler';
+
+        if (!buildPath) return { error: 'Build path is required' };
+        if (!target) return { error: 'Target is required' };
+
+        const absBuildPath = buildPath.startsWith('res://')
+          ? join(PROJECT_ROOT, buildPath.substring(6))
+          : resolve(PROJECT_ROOT, buildPath);
+
+        if (!validatePath(absBuildPath)) {
+          return { error: `Invalid build path: ${buildPath}` };
+        }
+
+        if (!existsSync(absBuildPath)) {
+          return { error: `Build path does not exist: ${buildPath}` };
+        }
+
+        const butlerArgs = ['push', absBuildPath, target];
+        gessoLog('info', SERVER_NAME, `Deploying to itch.io: ${butler} ${butlerArgs.join(' ')}`);
+
+        try {
+          const { stdout, stderr } = await execFileAsync(butler, butlerArgs, { timeout: 180000 });
+          return {
+            success: true,
+            target,
+            stdout,
+            stderr
+          };
+        } catch (execErr: any) {
+          return {
+            success: false,
+            error: execErr.message,
+            stdout: execErr.stdout,
+            stderr: execErr.stderr
+          };
+        }
+      } catch (err: any) {
+        return { error: `Deployment failed: ${err.message}` };
+      }
+    }
+    case 'install_export_templates': {
+      try {
+        let finalGodotVersion = args.godot_version || args.godotVersion;
+        if (!finalGodotVersion) {
+          if (!godotPath) {
+            godotPath = await detectGodotPath(PROJECT_ROOT);
+          }
+          if (godotPath) {
+            try {
+              const { stdout } = await execFileAsync(godotPath, ['--version'], { timeout: 5000 });
+              const versionStr = stdout.trim();
+              const match = versionStr.match(/^(\d+\.\d+(?:\.\d+)?\.(?:dev|stable|beta|rc|alpha)\d*)/);
+              if (match) {
+                finalGodotVersion = match[1];
+              } else {
+                finalGodotVersion = versionStr;
+              }
+            } catch (err: any) {
+              console.error('[Templates] Failed to run godot --version:', err.message);
+            }
+          }
+        }
+
+        if (!finalGodotVersion) {
+          return { error: 'Could not auto-detect Godot version and no version was provided.' };
+        }
+
+        const match = finalGodotVersion.match(/^(\d+)\.(\d+)(?:\.(\d+))?\.([a-z]+)(\d*)/);
+        let downloadUrl = args.download_url || args.downloadUrl;
+        let versionDir = finalGodotVersion;
+
+        if (match) {
+          const major = match[1];
+          const minor = match[2];
+          const patch = match[3];
+          const status = match[4];
+          const statusNum = match[5];
+
+          versionDir = `${major}.${minor}${patch ? '.' + patch : ''}.${status}${statusNum}`;
+
+          if (!downloadUrl) {
+            if (status === 'stable') {
+              const verTag = `${major}.${minor}${patch ? '.' + patch : ''}`;
+              downloadUrl = `https://downloads.tuxfamily.org/godotengine/${verTag}/Godot_v${verTag}-stable_export_templates.tpz`;
+            } else {
+              const verTag = `${major}.${minor}${patch ? '.' + patch : ''}`;
+              downloadUrl = `https://downloads.tuxfamily.org/godotengine/${major}.${minor}/${status}${statusNum}/Godot_v${verTag}-${status}${statusNum}_export_templates.tpz`;
+            }
+          }
+        } else {
+          if (!downloadUrl) {
+            return { error: `Could not parse Godot version format "${finalGodotVersion}" and no download_url was specified.` };
+          }
+        }
+
+        let appDataPath = '';
+        if (process.platform === 'win32') {
+          appDataPath = process.env.APPDATA || join(process.env.USERPROFILE || 'C:\\Users\\chibu', 'AppData', 'Roaming');
+        } else if (process.platform === 'darwin') {
+          appDataPath = join(process.env.HOME || '', 'Library', 'Application Support');
+        } else {
+          appDataPath = join(process.env.HOME || '', '.local', 'share');
+        }
+
+        const templatesBaseDir = process.platform === 'linux'
+          ? join(appDataPath, 'godot', 'export_templates')
+          : join(appDataPath, 'Godot', 'export_templates');
+
+        const destTemplatesDir = join(templatesBaseDir, versionDir);
+
+        const versionTxtPath = join(destTemplatesDir, 'version.txt');
+        if (existsSync(versionTxtPath) && readFileSync(versionTxtPath, 'utf8').trim() === versionDir) {
+          return {
+            success: true,
+            message: `Export templates for Godot version ${versionDir} are already installed.`,
+            installed_dir: destTemplatesDir
+          };
+        }
+
+        const localTpzPath = args.local_tpz_path || args.localTpzPath;
+        let archivePath = localTpzPath;
+        let isTempArchive = false;
+        const tempTpzPath = join(PROJECT_ROOT, `temp_templates_${versionDir}.zip`);
+
+        if (!archivePath) {
+          if (!downloadUrl) {
+            return { error: 'No download_url or local_tpz_path provided.' };
+          }
+          console.error(`[Templates] Downloading templates from: ${downloadUrl}`);
+          const response = await fetch(downloadUrl);
+          if (!response.ok) {
+            return { error: `Failed to download templates: ${response.status} ${response.statusText}` };
+          }
+          const fileStream = createWriteStream(tempTpzPath);
+          if (!response.body) {
+            return { error: 'Response body is empty' };
+          }
+          await new Promise<void>((resolve, reject) => {
+            Readable.fromWeb(response.body as any).pipe(fileStream)
+              .on('finish', () => resolve())
+              .on('error', (e: any) => reject(e));
+          });
+          archivePath = tempTpzPath;
+          isTempArchive = true;
+        }
+
+        if (!existsSync(archivePath)) {
+          return { error: `Templates archive not found at: ${archivePath}` };
+        }
+
+        const tempExtractDir = join(PROJECT_ROOT, `temp_extracted_${versionDir}`);
+        console.error(`[Templates] Extracting templates: ${archivePath} to ${tempExtractDir}`);
+        await extractArchive(archivePath, tempExtractDir);
+
+        const extractedTemplatesDir = join(tempExtractDir, 'templates');
+        if (!existsSync(extractedTemplatesDir)) {
+          if (isTempArchive && existsSync(tempTpzPath)) unlinkSync(tempTpzPath);
+          try {
+            if (existsSync(tempExtractDir)) {
+              rmSync(tempExtractDir, { recursive: true, force: true });
+            }
+          } catch {}
+          return { error: `Invalid templates archive: missing 'templates' root directory.` };
+        }
+
+        if (!existsSync(destTemplatesDir)) {
+          mkdirSync(destTemplatesDir, { recursive: true });
+        }
+
+        console.error(`[Templates] Copying template files to: ${destTemplatesDir}`);
+        const files = readdirSync(extractedTemplatesDir);
+        for (const file of files) {
+          const srcFile = join(extractedTemplatesDir, file);
+          const destFile = join(destTemplatesDir, file);
+          renameSync(srcFile, destFile);
+        }
+
+        writeFileSync(versionTxtPath, versionDir, 'utf8');
+
+        // Cleanup
+        try {
+          if (isTempArchive && existsSync(tempTpzPath)) unlinkSync(tempTpzPath);
+          if (existsSync(tempExtractDir)) {
+            rmSync(tempExtractDir, { recursive: true, force: true });
+          }
+        } catch (cleanErr: any) {
+          console.error(`[Templates] Cleanup failed: ${cleanErr.message}`);
+        }
+
+        return {
+          success: true,
+          message: `Successfully installed export templates for version ${versionDir}`,
+          installed_dir: destTemplatesDir
+        };
+      } catch (err: any) {
+        return { error: `Failed to install templates: ${err.message}` };
+      }
+    }
+    case 'login_to_itch': {
+      try {
+        const url = 'https://itch.io/login';
+        let command = '';
+        let argsList: string[] = [];
+        if (process.platform === 'win32') {
+          command = 'cmd.exe';
+          argsList = ['/c', 'start', '', url];
+        } else if (process.platform === 'darwin') {
+          command = 'open';
+          argsList = [url];
+        } else {
+          command = 'xdg-open';
+          argsList = [url];
+        }
+        gessoLog('info', SERVER_NAME, `Opening browser: ${command} ${argsList.join(' ')}`);
+        await execFileAsync(command, argsList, { timeout: 5000 });
+        return { success: true, message: `Opened itch.io login page in web browser.` };
+      } catch (err: any) {
+        return { error: `Failed to open web browser: ${err.message}` };
+      }
+    }
+    case 'create_itch_game_page': {
+      try {
+        const url = 'https://itch.io/game/new';
+        let command = '';
+        let argsList: string[] = [];
+        if (process.platform === 'win32') {
+          command = 'cmd.exe';
+          argsList = ['/c', 'start', '', url];
+        } else if (process.platform === 'darwin') {
+          command = 'open';
+          argsList = [url];
+        } else {
+          command = 'xdg-open';
+          argsList = [url];
+        }
+        gessoLog('info', SERVER_NAME, `Opening browser: ${command} ${argsList.join(' ')}`);
+        await execFileAsync(command, argsList, { timeout: 5000 });
+        return { success: true, message: `Opened itch.io game creation page in web browser.` };
+      } catch (err: any) {
+        return { error: `Failed to open web browser: ${err.message}` };
+      }
+    }
+    case 'generate_android_keystore': {
+      try {
+        const outputPath = args.output_path || args.outputPath;
+        if (!outputPath) return { error: 'Output path is required' };
+
+        const password = args.password || 'android';
+        const alias = args.alias || 'androiddebugkey';
+        const commonName = args.common_name || args.commonName || 'Android Debug';
+
+        const absOutputPath = outputPath.startsWith('res://')
+          ? join(PROJECT_ROOT, outputPath.substring(6))
+          : resolve(PROJECT_ROOT, outputPath);
+
+        if (!validatePath(absOutputPath)) {
+          return { error: `Invalid output path: ${outputPath}` };
+        }
+
+        const parentDir = dirname(absOutputPath);
+        if (!existsSync(parentDir)) {
+          mkdirSync(parentDir, { recursive: true });
+        }
+
+        if (existsSync(absOutputPath)) {
+          return {
+            success: true,
+            message: 'Keystore already exists at destination.',
+            path: outputPath
+          };
+        }
+
+        const argsList = [
+          '-genkeypair', '-v',
+          '-keystore', absOutputPath,
+          '-alias', alias,
+          '-keyalg', 'RSA',
+          '-keysize', '2048',
+          '-validity', '10000',
+          '-storepass', password,
+          '-keypass', password,
+          '-dname', `CN=${commonName}, O=Android, C=US`
+        ];
+
+        gessoLog('info', SERVER_NAME, `Generating Android keystore using keytool at: ${absOutputPath}`);
+        try {
+          const { stdout, stderr } = await execFileAsync('keytool', argsList, { timeout: 15000 });
+          return {
+            success: true,
+            message: 'Successfully generated Android keystore.',
+            path: outputPath,
+            stdout,
+            stderr
+          };
+        } catch (execErr: any) {
+          if (execErr.code === 'ENOENT') {
+            return {
+              error: 'Failed to find JDK keytool executable. Please make sure Java Development Kit (JDK) is installed and keytool is in your system PATH.'
+            };
+          }
+          return {
+            success: false,
+            error: execErr.message,
+            stdout: execErr.stdout,
+            stderr: execErr.stderr
+          };
+        }
+      } catch (err: any) {
+        return { error: `Failed to generate keystore: ${err.message}` };
+      }
+    }
+    case 'list_connected_devices': {
+      try {
+        const devices: any[] = [];
+        const adbPath = await detectAdbPath();
+
+        if (adbPath) {
+          try {
+            const { stdout } = await execFileAsync(adbPath, ['devices'], { timeout: 5000 });
+            const lines = stdout.split('\n');
+            for (let line of lines) {
+              line = line.trim();
+              if (!line || line.startsWith('List of devices attached')) continue;
+              const parts = line.split(/\s+/);
+              if (parts.length >= 2) {
+                devices.push({
+                  id: parts[0],
+                  status: parts[1],
+                  platform: 'android'
+                });
+              }
+            }
+          } catch (err: any) {
+            console.error('[Devices] ADB devices check failed:', err.message);
+          }
+        }
+
+        if (process.platform === 'darwin') {
+          try {
+            const { stdout } = await execFileAsync('xcrun', ['simctl', 'list', 'devices', 'booted'], { timeout: 5000 });
+            const lines = stdout.split('\n');
+            for (let line of lines) {
+              line = line.trim();
+              if (line.includes('(Booted)')) {
+                const match = line.match(/^([^\(]+)\s+\(([^\)]+)\)\s+\(Booted\)/);
+                if (match) {
+                  devices.push({
+                    id: match[2],
+                    name: match[1].trim(),
+                    status: 'booted',
+                    platform: 'ios',
+                    type: 'simulator'
+                  });
+                }
+              }
+            }
+          } catch {}
+        }
+
+        return { devices, adb_path: adbPath };
+      } catch (err: any) {
+        return { error: `Failed to list connected devices: ${err.message}` };
+      }
+    }
+    case 'deploy_to_device': {
+      try {
+        const platform = args.platform;
+        const buildPath = args.build_path || args.buildPath;
+        const packageName = args.package_name || args.packageName;
+        const deviceId = args.device_id || args.deviceId;
+
+        if (!platform) return { error: 'Platform is required' };
+        if (!buildPath) return { error: 'Build path is required' };
+        if (!packageName) return { error: 'Package name is required' };
+
+        const absBuildPath = buildPath.startsWith('res://')
+          ? join(PROJECT_ROOT, buildPath.substring(6))
+          : resolve(PROJECT_ROOT, buildPath);
+
+        if (!validatePath(absBuildPath)) {
+          return { error: `Invalid build path: ${buildPath}` };
+        }
+
+        if (!existsSync(absBuildPath)) {
+          return { error: `Build path does not exist: ${buildPath}` };
+        }
+
+        if (platform === 'android') {
+          const adbPath = await detectAdbPath();
+          if (!adbPath) {
+            return { error: 'Could not locate Android debug bridge (adb). Please make sure Android SDK platform-tools are installed.' };
+          }
+
+          const installArgs = deviceId ? ['-s', deviceId, 'install', '-r', absBuildPath] : ['install', '-r', absBuildPath];
+          gessoLog('info', SERVER_NAME, `Installing package: ${adbPath} ${installArgs.join(' ')}`);
+          
+          try {
+            await execFileAsync(adbPath, installArgs, { timeout: 60000 });
+          } catch (instErr: any) {
+            return {
+              success: false,
+              message: 'Installation failed.',
+              error: instErr.message,
+              stdout: instErr.stdout,
+              stderr: instErr.stderr
+            };
+          }
+
+          const launchArgs = deviceId 
+            ? ['-s', deviceId, 'shell', 'am', 'start', '-n', `${packageName}/com.godot.game.GodotApp`]
+            : ['shell', 'am', 'start', '-n', `${packageName}/com.godot.game.GodotApp`];
+          
+          gessoLog('info', SERVER_NAME, `Launching activity: ${adbPath} ${launchArgs.join(' ')}`);
+          const { stdout, stderr } = await execFileAsync(adbPath, launchArgs, { timeout: 15000 });
+          
+          return {
+            success: true,
+            message: 'Successfully installed and launched the game on Android device.',
+            stdout,
+            stderr
+          };
+        } else if (platform === 'ios') {
+          if (process.platform !== 'darwin') {
+            return { error: 'iOS deployment to devices/simulators is only supported on macOS host systems.' };
+          }
+
+          gessoLog('info', SERVER_NAME, `Deploying to iOS simulator: booted ${absBuildPath}`);
+          const installArgs = ['simctl', 'install', 'booted', absBuildPath];
+          
+          try {
+            await execFileAsync('xcrun', installArgs, { timeout: 30000 });
+          } catch (instErr: any) {
+            return {
+              success: false,
+              message: 'iOS Simulator installation failed.',
+              error: instErr.message,
+              stdout: instErr.stdout,
+              stderr: instErr.stderr
+            };
+          }
+
+          const launchArgs = ['simctl', 'launch', 'booted', packageName];
+          const { stdout, stderr } = await execFileAsync('xcrun', launchArgs, { timeout: 15000 });
+
+          return {
+            success: true,
+            message: 'Successfully installed and launched the game on iOS simulator.',
+            stdout,
+            stderr
+          };
+        } else {
+          return { error: `Unsupported deployment platform: ${platform}` };
+        }
+      } catch (err: any) {
+        return { error: `Deployment failed: ${err.message}` };
+      }
+    }
+    case 'host_web_build': {
+      try {
+        const buildPath = args.build_path || args.buildPath || 'build/web';
+        const port = args.port || 8000;
+
+        const absBuildPath = buildPath.startsWith('res://')
+          ? join(PROJECT_ROOT, buildPath.substring(6))
+          : resolve(PROJECT_ROOT, buildPath);
+
+        if (!validatePath(absBuildPath)) {
+          return { error: `Invalid build path: ${buildPath}` };
+        }
+
+        if (!existsSync(absBuildPath)) {
+          return { error: `Web build directory does not exist: ${buildPath}` };
+        }
+
+        const indexHtml = join(absBuildPath, 'index.html');
+        if (!existsSync(indexHtml)) {
+          console.warn(`[Web Server] index.html not found under: ${absBuildPath}`);
+        }
+
+        const existingServer = activeWebServers.get(port);
+        if (existingServer) {
+          gessoLog('info', SERVER_NAME, `Stopping existing local web server on port ${port}...`);
+          existingServer.close();
+          activeWebServers.delete(port);
+        }
+
+        const MIME_TYPES: Record<string, string> = {
+          '.html': 'text/html',
+          '.js': 'application/javascript',
+          '.wasm': 'application/wasm',
+          '.pck': 'application/octet-stream',
+          '.png': 'image/png',
+          '.jpg': 'image/jpeg',
+          '.jpeg': 'image/jpeg',
+          '.css': 'text/css',
+          '.svg': 'image/svg+xml',
+          '.json': 'application/json',
+        };
+
+        const server = createServer((req, res) => {
+          const reqUrl = req.url || '/';
+          const safeUrl = reqUrl.split('?')[0].replace(/\.\./g, '');
+          const filePath = safeUrl === '/' ? indexHtml : join(absBuildPath, safeUrl);
+
+          if (!existsSync(filePath)) {
+            res.writeHead(404, { 'Content-Type': 'text/plain' });
+            res.end('404 Not Found');
+            return;
+          }
+
+          const ext = extname(filePath).toLowerCase();
+          const mime = MIME_TYPES[ext] || 'application/octet-stream';
+
+          try {
+            const fileContent = readFileSync(filePath);
+            res.writeHead(200, {
+              'Content-Type': mime,
+              'Cross-Origin-Opener-Policy': 'same-origin',
+              'Cross-Origin-Embedder-Policy': 'require-corp',
+              'Cache-Control': 'no-cache',
+            });
+            res.end(fileContent);
+          } catch (serverErr: any) {
+            res.writeHead(500, { 'Content-Type': 'text/plain' });
+            res.end(`Internal Server Error: ${serverErr.message}`);
+          }
+        });
+
+        await new Promise<void>((resolvePromise, rejectPromise) => {
+          server.listen(port, () => {
+            activeWebServers.set(port, server);
+            resolvePromise();
+          });
+          server.on('error', (serverErr) => rejectPromise(serverErr));
+        });
+
+        const url = `http://localhost:${port}/`;
+        gessoLog('info', SERVER_NAME, `Web server hosting ${absBuildPath} on ${url}`);
+
+        let browserCmd = '';
+        let browserArgsList: string[] = [];
+        if (process.platform === 'win32') {
+          browserCmd = 'cmd.exe';
+          browserArgsList = ['/c', 'start', '', url];
+        } else if (process.platform === 'darwin') {
+          browserCmd = 'open';
+          browserArgsList = [url];
+        } else {
+          browserCmd = 'xdg-open';
+          browserArgsList = [url];
+        }
+
+        try {
+          await execFileAsync(browserCmd, browserArgsList, { timeout: 5000 });
+        } catch (browserErr: any) {
+          console.error('[Web Server] Failed to open browser:', browserErr.message);
+        }
+
+        return {
+          success: true,
+          message: `Web server hosting ${buildPath} started on port ${port} and opened in browser.`,
+          url
+        };
+      } catch (err: any) {
+        return { error: `Failed to start local web server: ${err.message}` };
+      }
+    }
+    case 'deploy_to_vercel': {
+      try {
+        const buildPath = args.build_path || args.buildPath || 'build/web';
+        const production = args.production !== false;
+        const vercel = args.vercel_path || args.vercelPath || 'vercel';
+
+        const absBuildPath = buildPath.startsWith('res://')
+          ? join(PROJECT_ROOT, buildPath.substring(6))
+          : resolve(PROJECT_ROOT, buildPath);
+
+        if (!validatePath(absBuildPath)) {
+          return { error: `Invalid build path: ${buildPath}` };
+        }
+
+        if (!existsSync(absBuildPath)) {
+          return { error: `Web build directory does not exist: ${buildPath}` };
+        }
+
+        const vercelArgs = ['deploy', absBuildPath];
+        if (production) {
+          vercelArgs.push('--prod');
+        }
+        vercelArgs.push('--yes');
+
+        gessoLog('info', SERVER_NAME, `Deploying to Vercel: ${vercel} ${vercelArgs.join(' ')}`);
+
+        try {
+          const { stdout, stderr } = await execFileAsync(vercel, vercelArgs, { timeout: 90000 });
+          return {
+            success: true,
+            stdout,
+            stderr
+          };
+        } catch (execErr: any) {
+          if (execErr.code === 'ENOENT') {
+            return {
+              error: 'Failed to find Vercel CLI executable. Please install it using "npm install -g vercel" and log in first.'
+            };
+          }
+          return {
+            success: false,
+            error: execErr.message,
+            stdout: execErr.stdout,
+            stderr: execErr.stderr
+          };
+        }
+      } catch (err: any) {
+        return { error: `Vercel deployment failed: ${err.message}` };
+      }
+    }
     default:
       return null;
   }
@@ -440,7 +1517,7 @@ async function extractArchive(zipPath: string, destDir: string): Promise<boolean
 }
 
 // Master execution dispatcher routing calls to WebSocket or Headless CLI
-async function handleToolCall(name: string, toolArgs: Record<string, unknown>): Promise<any> {
+export async function handleToolCall(name: string, toolArgs: Record<string, unknown>): Promise<any> {
   const normalizedArgs = normalizeParameters(toolArgs);
 
   // 1. Direct Node-based Filesystem Tools (instant execution, works offline/online)
@@ -546,17 +1623,22 @@ async function handleToolCall(name: string, toolArgs: Record<string, unknown>): 
   }
 }
 
-// Bootstrap MCP Server
-async function main() {
-  // Start WebSocket server (only one Gesso instance may own the bridge port)
+/** Start the WebSocket bridge if this process owns it (CLI daemon / first MCP start). */
+export async function ensureBridgeStarted(options?: { releaseStale?: boolean }): Promise<void> {
+  if (editorBridge.isListening()) {
+    return;
+  }
+  const releaseStale = options?.releaseStale !== false;
   try {
     if (await isPortInUse(WEBSOCKET_PORT)) {
-      gessoLog(
-        'warn',
-        SERVER_NAME,
-        `Port ${WEBSOCKET_PORT} in use — stopping stale Gesso MCP server...`
-      );
-      await releaseStaleGessoServerOnPort(WEBSOCKET_PORT);
+      if (releaseStale) {
+        gessoLog('warn', SERVER_NAME, `Port ${WEBSOCKET_PORT} in use — stopping stale Gesso MCP server...`);
+        await releaseStaleGessoServerOnPort(WEBSOCKET_PORT);
+      } else {
+        throw new Error(
+          `Port ${WEBSOCKET_PORT} is already in use. Attach to the bridge daemon, use --stdio, or set GESSO_PORT.`
+        );
+      }
     }
     await editorBridge.start();
     gessoLog('info', SERVER_NAME, `Bridge ready on port ${WEBSOCKET_PORT} — project: ${PROJECT_ROOT}`);
@@ -564,6 +1646,13 @@ async function main() {
     gessoLog('warn', SERVER_NAME, `Failed to start WebSocket on port ${WEBSOCKET_PORT}: ${err.message}`);
     gessoLog('warn', SERVER_NAME, 'Headless & filesystem tools still work; live editor tools may be unavailable.');
   }
+}
+
+export { editorBridge, PROJECT_ROOT, SERVER_NAME, SERVER_VERSION, WEBSOCKET_PORT };
+
+// Bootstrap MCP Server
+async function main() {
+  await ensureBridgeStarted({ releaseStale: true });
 
   // Tell the Godot plugin when the editor bridge is up. With stdio MCP, this
   // process only runs while Cursor has the gesso server enabled, so count=1
@@ -651,7 +1740,12 @@ async function main() {
   }
 }
 
-main().catch(err => {
-  gessoLog('error', SERVER_NAME, `Startup failed: ${err}`);
-  process.exit(1);
-});
+const isMainModule =
+  process.argv[1] && normalize(resolve(process.argv[1])) === normalize(__filename);
+
+if (isMainModule) {
+  main().catch((err) => {
+    gessoLog('error', SERVER_NAME, `Startup failed: ${err}`);
+    process.exit(1);
+  });
+}

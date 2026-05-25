@@ -282,6 +282,14 @@ export async function detectGodotPath(workspaceRoot?: string): Promise<string | 
 
     const localExe = normalize(join(workspaceRoot, 'Godot 4', 'Godot_v4.7-dev5_win64.exe'));
     if (await isValidGodotPath(localExe)) return localExe;
+
+    // Check parent directory
+    const parentRoot = dirname(workspaceRoot);
+    const parentConsoleExe = normalize(join(parentRoot, 'Godot 4', 'Godot_v4.7-dev5_win64_console.exe'));
+    if (await isValidGodotPath(parentConsoleExe)) return parentConsoleExe;
+
+    const parentExe = normalize(join(parentRoot, 'Godot 4', 'Godot_v4.7-dev5_win64.exe'));
+    if (await isValidGodotPath(parentExe)) return parentExe;
   }
 
   // 3. Fallback to system check
