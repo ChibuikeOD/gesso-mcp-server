@@ -394,6 +394,8 @@ func _capture_fullscreen(save_to: String, return_base64: bool, screen_index: int
 	})
 
 func _find_debug_game_window_id() -> int:
+	if not DisplayServer.has_method(&"window_get_title"):
+		return -1
 	var project_name := str(ProjectSettings.get_setting("application/config/name", "Godot"))
 	var main_title := str(DisplayServer.call(StringName("window_get_title"), DisplayServer.MAIN_WINDOW_ID))
 	for wid: int in DisplayServer.get_window_list():
