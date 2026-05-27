@@ -2111,8 +2111,8 @@ async function handleJepaTool(name: string, args: any): Promise<any> {
 
     case 'jepa_save_baseline': {
       try {
-        const scenePath = args.scene_path;
-        const baselineName = args.baseline_name;
+        const scenePath = args.scene_path || args.scenePath;
+        const baselineName = args.baseline_name || args.baselineName;
 
         if (!editorBridge.isAvailable()) {
           return { error: 'Godot Editor is not connected. Cannot launch scene.' };
@@ -2172,8 +2172,8 @@ async function handleJepaTool(name: string, args: any): Promise<any> {
 
     case 'jepa_verify_scene': {
       try {
-        const scenePath = args.scene_path;
-        const baselineName = args.baseline_name;
+        const scenePath = args.scene_path || args.scenePath;
+        const baselineName = args.baseline_name || args.baselineName;
         const threshold = typeof args.threshold === 'number' ? args.threshold : 0.95;
 
         const baselineFile = join(PROJECT_ROOT, '.gesso', 'baselines', `${baselineName}.json`);
@@ -2243,7 +2243,7 @@ async function handleJepaTool(name: string, args: any): Promise<any> {
 
     case 'jepa_run_playtest': {
       try {
-        const scenePath = args.scene_path;
+        const scenePath = args.scene_path || args.scenePath;
         const steps = typeof args.steps === 'number' ? args.steps : 15;
         const threshold = typeof args.threshold === 'number' ? args.threshold : 0.95;
 
