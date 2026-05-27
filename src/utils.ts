@@ -261,7 +261,7 @@ export function isGodot44OrLater(version: string): boolean {
 export async function isValidGodotPath(path: string): Promise<boolean> {
   try {
     if (!existsSync(path)) return false;
-    const { stdout } = await execFileAsync(path, ['--version'], { timeout: 2000 });
+    const { stdout } = await execFileAsync(path, ['--version'], { timeout: 2000, windowsHide: true });
     return stdout.trim().length > 0;
   } catch {
     return false;
@@ -317,7 +317,7 @@ export async function detectGodotPath(workspaceRoot?: string): Promise<string | 
   for (const path of possiblePaths) {
     if (path === 'godot') {
       try {
-        const { stdout } = await execFileAsync('godot', ['--version'], { timeout: 1000 });
+        const { stdout } = await execFileAsync('godot', ['--version'], { timeout: 1000, windowsHide: true });
         if (stdout.trim().length > 0) return 'godot';
       } catch {}
     } else {
@@ -403,7 +403,7 @@ export async function releaseStaleGessoServerOnPort(port: number): Promise<boole
           '-Command',
           `@(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue).OwningProcess | Select-Object -First 1`,
         ],
-        { timeout: 8000 }
+        { timeout: 8000, windowsHide: true }
       );
       const pid = parseInt(stdout.trim(), 10);
       if (!pid || pid === process.pid) {
@@ -417,16 +417,18 @@ export async function releaseStaleGessoServerOnPort(port: number): Promise<boole
           '-Command',
           `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`,
         ],
-        { timeout: 5000 }
+        { timeout: 5000, windowsHide: true }
       );
       if (!cmdLine.includes('gesso-mcp-server')) {
-        console.error(
-          `[Gesso] Port ${port} is used by PID ${pid} (not gesso-mcp-server). Close that app or set GESSO_PORT.`
+        gessoLog(
+          'warn',
+          'Gesso',
+          `Port ${port} is used by PID ${pid} (not gesso-mcp-server). Close that app or set GESSO_PORT.`
         );
         return false;
       }
 
-      await execFileAsync('taskkill', ['/PID', String(pid), '/F'], { timeout: 5000 });
+      await execFileAsync('taskkill', ['/PID', String(pid), '/F'], { timeout: 5000, windowsHide: true });
       await new Promise((r) => setTimeout(r, 400));
       return true;
     } catch {

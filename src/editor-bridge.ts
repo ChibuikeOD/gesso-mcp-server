@@ -149,7 +149,8 @@ export class EditorBridge {
 
   private releaseRuntimeSlot(ws: WebSocket, code: number, reason: string): void {
     if (this.runtime?.ws !== ws) return;
-    const level = code === 1000 ? 'debug' : 'warn';
+    // 1006 is common when play mode stops; avoid warn on stderr (Cursor labels it as error).
+    const level = code === 1000 || code === 1006 ? 'debug' : 'warn';
     this.log(level, `Runtime disconnected: ${code} — ${reason}`);
     this.runtime = null;
     this.failPending('runtime', new Error('Godot runtime disconnected'));
@@ -159,7 +160,7 @@ export class EditorBridge {
 
   private releaseEditorSlot(ws: WebSocket, code: number, reason: string): void {
     if (this.editor?.ws !== ws) return;
-    const level = code === 1000 ? 'debug' : 'warn';
+    const level = code === 1000 || code === 1006 ? 'debug' : 'warn';
     this.log(level, `Editor disconnected: ${code} — ${reason}`);
     this.editor = null;
     this.failPending('editor', new Error('Godot disconnected'));

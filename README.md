@@ -91,14 +91,34 @@ Add Gesso to your configuration file (Windows: `%APPDATA%\Claude\claude_desktop_
 > **Port Customization:** You can change the WebSocket bridge port by setting the `GESSO_PORT` environment variable.
 > **Log Verbosity:** Change `GESSO_LOG_LEVEL` to `debug`, `info`, `warn`, or `error` depending on your debugging requirements.
 
-#### Cursor
+#### Cursor (grouped servers — recommended)
+
+Cursor exposes only ~**40 MCP tools** per chat. Gesso registers ~200 tools, so use the **router + groups** layout:
+
+```bash
+cd gesso-mcp-server
+npm run build
+npm run mcp:cursor          # writes ../.cursor/mcp.json (router + workspace/scenes/editor)
+npm run mcp:cursor:all      # also writes ../.cursor/mcp.gesso-all-groups.json
+```
+
+| Server | Role |
+|--------|------|
+| **`gesso-router`** | 4 tools: `list_gesso_tool_groups`, `list_gesso_group_tools`, `call_gesso_tool`, `get_godot_status` |
+| **`gesso-workspace`** | Files, scripts, project settings (~16 tools) |
+| **`gesso-scenes`** | Scene tree & assets (~31 tools) |
+| **`gesso-editor`** | Editor play mode, captures, logs (~23 tools) |
+| **`gesso-playtest_*`**, **`gesso-deploy`**, etc. | In `mcp.gesso-all-groups.json` — enable one at a time in MCP settings |
+
+**Usage:** Keep **`gesso-router` enabled**. Ask the model to call `list_gesso_tool_groups`, pick a group, then either `call_gesso_tool` or enable the matching `gesso-<group>` server for direct tools. **Do not enable all group servers at once** (you will exceed the 40-tool cap).
+
+All group servers share one **bridge daemon** (`GESSO_CTRL_CLIENT=1`) on port 6506 — no duplicate WebSocket bridges.
+
+#### Cursor (single monolithic server — legacy)
+
 1. Go to **Cursor Settings** > **Features** > **MCP**.
-2. Click **+ Add New MCP Server**.
-3. Fill in the details:
-   - **Name:** `gesso-mcp-server`
-   - **Type:** `command`
-   - **Command:** `node C:/Users/chibu/OneDrive/Documents/Gesso/gesso-mcp-server/dist/index.js`
-4. Click **Save**.
+2. Add a server with **Command:** `node .../gesso-mcp-server/dist/index.js` (no `GESSO_TOOL_GROUP`).
+3. Disable unused tools manually in the MCP UI (required for ~200 tools).
 
 ---
 

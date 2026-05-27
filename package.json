@@ -20,7 +20,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "bridge": "node scripts/bridge-daemon.mjs",
-    "call-tool": "node scripts/call-tool.mjs"
+    "call-tool": "node scripts/call-tool.mjs",
+    "mcp:cursor": "node scripts/generate-cursor-mcp.mjs",
+    "mcp:cursor:all": "node scripts/generate-cursor-mcp.mjs --all"
   },
   "keywords": [
     "mcp",

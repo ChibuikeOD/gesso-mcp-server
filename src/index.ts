@@ -23,6 +23,8 @@ import { Readable } from 'stream';
 import { createServer } from 'http';
 
 import { allTools, toolExists } from './tools/index.js';
+import { getActiveTools, getActiveToolGroupId, isValidGroupId } from './tool-groups.js';
+import { ensureBridgeDaemon, invokeToolViaDaemon } from './daemon-client.js';
 import { EditorBridge } from './editor-bridge.js';
 import {
   normalizeParameters,
@@ -342,7 +344,9 @@ const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const SERVER_NAME = 'gesso-mcp-server';
+const TOOL_GROUP_ID = getActiveToolGroupId();
+const IS_CTRL_CLIENT = process.env.GESSO_CTRL_CLIENT === '1' || process.env.GESSO_CTRL_CLIENT === 'true';
+const SERVER_NAME = TOOL_GROUP_ID ? `gesso-${TOOL_GROUP_ID}` : 'gesso-mcp-server';
 const SERVER_VERSION = '0.1.0';
 const WEBSOCKET_PORT = process.env.GESSO_PORT ? parseInt(process.env.GESSO_PORT, 10) : 6505;
 
@@ -384,7 +388,7 @@ async function executeHeadlessOperation(
   ];
 
   gessoLog('debug', SERVER_NAME, `Headless CLI: ${godotPath} ${args.join(' ')}`);
-  const { stdout, stderr } = await execFileAsync(godotPath, args, { timeout: 15000 });
+  const { stdout, stderr } = await execFileAsync(godotPath, args, { timeout: 15000, windowsHide: true });
   return { stdout, stderr };
 }
 
@@ -1957,7 +1961,7 @@ async function extractArchive(zipPath: string, destDir: string): Promise<boolean
 
   if (process.platform === 'win32') {
     try {
-      await execFileAsync('tar', ['-xf', zipPath, '-C', destDir]);
+      await execFileAsync('tar', ['-xf', zipPath, '-C', destDir], { windowsHide: true });
       return true;
     } catch (tarError: any) {
       console.warn('Tar extraction failed, trying PowerShell Expand-Archive...', tarError.message);
@@ -1965,7 +1969,7 @@ async function extractArchive(zipPath: string, destDir: string): Promise<boolean
         '-NoProfile',
         '-Command',
         `Expand-Archive -Path "${zipPath}" -DestinationPath "${destDir}" -Force`
-      ]);
+      ], { windowsHide: true });
       return true;
     }
   } else {
@@ -1979,6 +1983,120 @@ async function extractArchive(zipPath: string, destDir: string): Promise<boolean
     }
   }
 }
+async function handleJepaTool(name: string, args: any): Promise<any> {
+  if (!name.startsWith('jepa_')) {
+    return null;
+  }
+
+  const jepaUrl = process.env.GESSO_JEPA_URL || 'http://localhost:8765';
+
+  switch (name) {
+    case 'jepa_get_status': {
+      try {
+        const response = await fetch(`${jepaUrl}/health`, {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(3000)
+        });
+        if (!response.ok) {
+          return { error: `V-JEPA service returned error status: ${response.status} ${response.statusText}` };
+        }
+        return await response.json();
+      } catch (err: any) {
+        return {
+          error: `Could not connect to V-JEPA service at ${jepaUrl}. Make sure the service is running. Error: ${err.message}`
+        };
+      }
+    }
+
+    case 'jepa_encode_frame': {
+      try {
+        let base64Image = '';
+        if (args.image_path) {
+          const resPath = args.image_path;
+          const absPath = resPath.startsWith('res://')
+            ? join(PROJECT_ROOT, resPath.substring(6))
+            : join(PROJECT_ROOT, resPath);
+
+          if (!existsSync(absPath)) {
+            return { error: `Image file does not exist: ${resPath}` };
+          }
+          base64Image = readFileSync(absPath).toString('base64');
+        } else {
+          // Capture from game
+          if (!editorBridge.isAvailable()) {
+            return { error: 'Game is not running and editor is disconnected. Cannot capture screen. Start the game or provide a path via image_path.' };
+          }
+          const result = await editorBridge.invokeTool('capture_screen', {
+            target: 'game',
+            return_base64: true
+          }) as any;
+
+          if (!result || !result.ok) {
+            return { error: `Failed to capture screen: ${result?.error || 'Unknown error'}` };
+          }
+          base64Image = result.base64_png;
+        }
+
+        const response = await fetch(`${jepaUrl}/encode`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image_b64: base64Image })
+        });
+
+        if (!response.ok) {
+          return { error: `V-JEPA service returned error status: ${response.status} ${response.statusText}` };
+        }
+        return await response.json();
+      } catch (err: any) {
+        return { error: `V-JEPA encode failed: ${err.message}` };
+      }
+    }
+
+    case 'jepa_scene_similarity': {
+      try {
+        const response = await fetch(`${jepaUrl}/similarity`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            latent_1: args.latent_1,
+            latent_2: args.latent_2
+          })
+        });
+
+        if (!response.ok) {
+          return { error: `V-JEPA service returned error: ${response.status} ${response.statusText}` };
+        }
+        return await response.json();
+      } catch (err: any) {
+        return { error: `V-JEPA similarity calculation failed: ${err.message}` };
+      }
+    }
+
+    case 'jepa_imagine_next_state': {
+      try {
+        const response = await fetch(`${jepaUrl}/predict`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            latent_context: args.latent_context,
+            action: args.action
+          })
+        });
+
+        if (!response.ok) {
+          return { error: `V-JEPA service returned error: ${response.status} ${response.statusText}` };
+        }
+        return await response.json();
+      } catch (err: any) {
+        return { error: `V-JEPA predictor failed: ${err.message}` };
+      }
+    }
+
+    default:
+      return null;
+  }
+}
 
 // Master execution dispatcher routing calls to WebSocket or Headless CLI
 export async function handleToolCall(name: string, toolArgs: Record<string, unknown>): Promise<any> {
@@ -1989,6 +2107,13 @@ export async function handleToolCall(name: string, toolArgs: Record<string, unkn
   if (fsResult !== null) {
     if (fsResult.error) return createErrorResponse(fsResult.error);
     return { content: [{ type: 'text', text: JSON.stringify(fsResult, null, 2) }] };
+  }
+
+  // 1.5. JEPA World Model Tools
+  const jepaResult = await handleJepaTool(name, normalizedArgs);
+  if (jepaResult !== null) {
+    if (jepaResult.error) return createErrorResponse(jepaResult.error);
+    return { content: [{ type: 'text', text: JSON.stringify(jepaResult, null, 2) }] };
   }
 
   // 2. WebSocket execution (Editor and/or in-game runtime connected)
@@ -2096,8 +2221,18 @@ export async function ensureBridgeStarted(options?: { releaseStale?: boolean }):
   try {
     if (await isPortInUse(WEBSOCKET_PORT)) {
       if (releaseStale) {
-        gessoLog('warn', SERVER_NAME, `Port ${WEBSOCKET_PORT} in use — stopping stale Gesso MCP server...`);
-        await releaseStaleGessoServerOnPort(WEBSOCKET_PORT);
+        // Expected when Cursor restarts MCP; keep at debug — stderr shows as [error] in Cursor.
+        gessoLog('debug', SERVER_NAME, `Port ${WEBSOCKET_PORT} in use — stopping stale Gesso MCP server...`);
+        const released = await releaseStaleGessoServerOnPort(WEBSOCKET_PORT);
+        if (await isPortInUse(WEBSOCKET_PORT)) {
+          gessoLog(
+            'warn',
+            SERVER_NAME,
+            released
+              ? `Port ${WEBSOCKET_PORT} still in use after stale cleanup — set GESSO_PORT or close the other process.`
+              : `Port ${WEBSOCKET_PORT} is in use by another app — set GESSO_PORT or close it.`
+          );
+        }
       } else {
         throw new Error(
           `Port ${WEBSOCKET_PORT} is already in use. Attach to the bridge daemon, use --stdio, or set GESSO_PORT.`
@@ -2116,21 +2251,23 @@ export { editorBridge, PROJECT_ROOT, SERVER_NAME, SERVER_VERSION, WEBSOCKET_PORT
 
 // Bootstrap MCP Server
 async function main() {
-  await ensureBridgeStarted({ releaseStale: true });
+  if (TOOL_GROUP_ID && !isValidGroupId(TOOL_GROUP_ID)) {
+    throw new Error(`Invalid GESSO_TOOL_GROUP="${TOOL_GROUP_ID}". See list_gesso_tool_groups in gesso-router.`);
+  }
 
-  // Tell the Godot plugin when the editor bridge is up. With stdio MCP, this
-  // process only runs while Cursor has the gesso server enabled, so count=1
-  // means "agent session active" once Godot is connected.
-  editorBridge.onConnectionChange((connected) => {
-    editorBridge.sendClientStatus(connected ? 1 : 0);
-  });
+  const exposedTools = getActiveTools();
 
-  // Pre-detect Godot path
-  godotPath = await detectGodotPath(PROJECT_ROOT);
-  if (godotPath) {
-    gessoLog('info', SERVER_NAME, `Godot: ${godotPath}`);
+  if (IS_CTRL_CLIENT) {
+    await ensureBridgeDaemon();
   } else {
-    gessoLog('warn', SERVER_NAME, 'Godot path not detected — set GODOT_PATH for headless tools.');
+    await ensureBridgeStarted({ releaseStale: true });
+    editorBridge.onConnectionChange((connected) => {
+      editorBridge.sendClientStatus(connected ? 1 : 0);
+    });
+    godotPath = await detectGodotPath(PROJECT_ROOT);
+    if (godotPath) {
+      gessoLog('debug', SERVER_NAME, `Godot: ${godotPath}`);
+    }
   }
 
   const server = new Server(
@@ -2138,61 +2275,84 @@ async function main() {
     { capabilities: { tools: {} } }
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
-    // Return connection status tool along with all registered tools
-    const statusTool = {
-      name: 'get_godot_status',
-      description: 'Check if Godot editor is connected to the Gesso MCP server.',
-      inputSchema: {
-        type: 'object' as const,
-        properties: {},
-        required: []
-      }
-    };
+  const statusTool = {
+    name: 'get_godot_status',
+    description: 'Check if Godot editor is connected to the Gesso MCP server.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
+      required: [] as string[],
+    },
+  };
 
-    return {
-      tools: [
-        statusTool,
-        ...allTools.map(t => ({
-          name: t.name,
-          description: t.description,
-          inputSchema: t.inputSchema,
-        }))
-      ]
-    };
-  });
+  const exposedToolNames = new Set(exposedTools.map((t) => t.name));
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      statusTool,
+      ...exposedTools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      })),
+    ],
+  }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
-    
+    const toolArgs = (args || {}) as Record<string, unknown>;
+
+    if (name !== 'get_godot_status' && !toolExists(name)) {
+      throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
+    }
+
+    if (TOOL_GROUP_ID && name !== 'get_godot_status' && !exposedToolNames.has(name)) {
+      throw new McpError(
+        ErrorCode.MethodNotFound,
+        `Tool "${name}" is not in group "${TOOL_GROUP_ID}". Use gesso-router or another group server.`
+      );
+    }
+
+    if (IS_CTRL_CLIENT) {
+      const result = await invokeToolViaDaemon(name, toolArgs);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    }
+
     if (name === 'get_godot_status') {
       const status = editorBridge.getStatus();
       const live = status.connected || status.runtimeConnected;
       return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            connected: status.connected,
-            runtime_connected: status.runtimeConnected,
-            server_version: SERVER_VERSION,
-            websocket_port: WEBSOCKET_PORT,
-            mode: live ? 'live' : 'headless_fallback',
-            project_path: PROJECT_ROOT,
-            connected_at: status.connectedAt?.toISOString() || null,
-            pending_requests: status.pendingRequests,
-          }, null, 2)
-        }]
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                connected: status.connected,
+                runtime_connected: status.runtimeConnected,
+                server_version: SERVER_VERSION,
+                websocket_port: WEBSOCKET_PORT,
+                tool_group: TOOL_GROUP_ID,
+                mode: live ? 'live' : 'headless_fallback',
+                project_path: PROJECT_ROOT,
+                connected_at: status.connectedAt?.toISOString() || null,
+                pending_requests: status.pendingRequests,
+              },
+              null,
+              2
+            ),
+          },
+        ],
       };
     }
 
-    if (name !== 'get_godot_status' && !toolExists(name)) {
-      throw new McpError(
-        ErrorCode.MethodNotFound,
-        `Unknown tool: ${name}`
-      );
-    }
-
-    return await handleToolCall(name, (args || {}) as Record<string, unknown>);
+    return await handleToolCall(name, toolArgs);
   });
 
   const transport = new StdioServerTransport();
