@@ -2027,15 +2027,31 @@ async function handleJepaTool(name: string, args: any): Promise<any> {
           if (!editorBridge.isAvailable()) {
             return { error: 'Game is not running and editor is disconnected. Cannot capture screen. Start the game or provide a path via image_path.' };
           }
-          const result = await editorBridge.invokeTool('capture_screen', {
-            target: 'game',
-            return_base64: true
-          }) as any;
-
-          if (!result || !result.ok) {
-            return { error: `Failed to capture screen: ${result?.error || 'Unknown error'}` };
+          
+          if (editorBridge.isRuntimeConnected()) {
+            try {
+              const result = await editorBridge.invokeTool('take_screenshot', {
+                return_base64: true
+              }) as any;
+              if (result && !result.error) {
+                base64Image = result.data || result.base64_png;
+              }
+            } catch (err: any) {
+              gessoLog('warn', SERVER_NAME, `Runtime capture failed, trying editor-side fallback: ${err.message}`);
+            }
           }
-          base64Image = result.base64_png;
+
+          if (!base64Image) {
+            const result = await editorBridge.invokeTool('capture_screen', {
+              target: 'game',
+              return_base64: true
+            }) as any;
+
+            if (!result || !result.ok) {
+              return { error: `Failed to capture screen: ${result?.error || 'Unknown error'}` };
+            }
+            base64Image = result.base64_png;
+          }
         }
 
         const response = await fetch(`${jepaUrl}/encode`, {
@@ -2090,6 +2106,273 @@ async function handleJepaTool(name: string, args: any): Promise<any> {
         return await response.json();
       } catch (err: any) {
         return { error: `V-JEPA predictor failed: ${err.message}` };
+      }
+    }
+
+    case 'jepa_save_baseline': {
+      try {
+        const scenePath = args.scene_path;
+        const baselineName = args.baseline_name;
+
+        if (!editorBridge.isAvailable()) {
+          return { error: 'Godot Editor is not connected. Cannot launch scene.' };
+        }
+
+        gessoLog('info', SERVER_NAME, `Launching scene: ${scenePath} for baseline generation...`);
+        const runRes = await editorBridge.invokeTool('run_scene', {
+          scene: scenePath,
+          wait_for_runtime: true
+        }) as any;
+
+        if (runRes && runRes.error) {
+          return { error: `Failed to run scene: ${runRes.error}` };
+        }
+
+        // Wait a small moment for rendering/autoloads to settle
+        await new Promise((r) => setTimeout(r, 1000));
+
+        gessoLog('info', SERVER_NAME, `Encoding visual frame...`);
+        const encodeRes = await handleJepaTool('jepa_encode_frame', {});
+        if (!encodeRes || encodeRes.error) {
+          await editorBridge.invokeTool('stop_scene', {});
+          return { error: `Failed to encode frame: ${encodeRes?.error || 'Unknown error'}` };
+        }
+
+        const latent = encodeRes.latent;
+
+        // Save to .gesso/baselines/<baselineName>.json in PROJECT_ROOT
+        const baselineDir = join(PROJECT_ROOT, '.gesso', 'baselines');
+        if (!existsSync(baselineDir)) {
+          mkdirSync(baselineDir, { recursive: true });
+        }
+        const filepath = join(baselineDir, `${baselineName}.json`);
+        writeFileSync(filepath, JSON.stringify({
+          scene_path: scenePath,
+          baseline_name: baselineName,
+          created_at: new Date().toISOString(),
+          latent: latent
+        }, null, 2));
+
+        gessoLog('info', SERVER_NAME, `Stopping scene...`);
+        await editorBridge.invokeTool('stop_scene', {});
+
+        return {
+          success: true,
+          scene_path: scenePath,
+          baseline_name: baselineName,
+          baseline_path: filepath
+        };
+      } catch (err: any) {
+        try {
+          await editorBridge.invokeTool('stop_scene', {});
+        } catch (_) {}
+        return { error: `Failed to save baseline: ${err.message}` };
+      }
+    }
+
+    case 'jepa_verify_scene': {
+      try {
+        const scenePath = args.scene_path;
+        const baselineName = args.baseline_name;
+        const threshold = typeof args.threshold === 'number' ? args.threshold : 0.95;
+
+        const baselineFile = join(PROJECT_ROOT, '.gesso', 'baselines', `${baselineName}.json`);
+        if (!existsSync(baselineFile)) {
+          return { error: `Baseline file not found at: ${baselineFile}. Run jepa_save_baseline first.` };
+        }
+
+        const baselineData = JSON.parse(readFileSync(baselineFile, 'utf8'));
+        const baselineLatent = baselineData.latent;
+
+        if (!editorBridge.isAvailable()) {
+          return { error: 'Godot Editor is not connected. Cannot launch scene.' };
+        }
+
+        gessoLog('info', SERVER_NAME, `Launching scene: ${scenePath} for verification...`);
+        const runRes = await editorBridge.invokeTool('run_scene', {
+          scene: scenePath,
+          wait_for_runtime: true
+        }) as any;
+
+        if (runRes && runRes.error) {
+          return { error: `Failed to run scene: ${runRes.error}` };
+        }
+
+        await new Promise((r) => setTimeout(r, 1000));
+
+        gessoLog('info', SERVER_NAME, `Encoding visual frame...`);
+        const encodeRes = await handleJepaTool('jepa_encode_frame', {});
+        if (!encodeRes || encodeRes.error) {
+          await editorBridge.invokeTool('stop_scene', {});
+          return { error: `Failed to encode frame: ${encodeRes?.error || 'Unknown error'}` };
+        }
+
+        const currentLatent = encodeRes.latent;
+
+        gessoLog('info', SERVER_NAME, `Computing similarity...`);
+        const simRes = await handleJepaTool('jepa_scene_similarity', {
+          latent_1: baselineLatent,
+          latent_2: currentLatent
+        });
+
+        gessoLog('info', SERVER_NAME, `Stopping scene...`);
+        await editorBridge.invokeTool('stop_scene', {});
+
+        if (!simRes || simRes.error) {
+          return { error: `Failed to compute similarity: ${simRes?.error || 'Unknown error'}` };
+        }
+
+        const similarity = simRes.similarity;
+        const passed = similarity >= threshold;
+
+        return {
+          success: true,
+          scene_path: scenePath,
+          baseline_name: baselineName,
+          similarity: similarity,
+          threshold: threshold,
+          passed: passed
+        };
+      } catch (err: any) {
+        try {
+          await editorBridge.invokeTool('stop_scene', {});
+        } catch (_) {}
+        return { error: `Failed to verify scene: ${err.message}` };
+      }
+    }
+
+    case 'jepa_run_playtest': {
+      try {
+        const scenePath = args.scene_path;
+        const steps = typeof args.steps === 'number' ? args.steps : 15;
+        const threshold = typeof args.threshold === 'number' ? args.threshold : 0.95;
+
+        if (!editorBridge.isAvailable()) {
+          return { error: 'Godot Editor is not connected. Cannot launch scene.' };
+        }
+
+        let actions = args.actions as string[];
+        if (!actions || !Array.isArray(actions) || actions.length === 0) {
+          try {
+            const inputMapRes = await editorBridge.invokeTool('get_input_map', {}) as any;
+            if (inputMapRes && inputMapRes.actions && !inputMapRes.error) {
+              const allActions = Object.keys(inputMapRes.actions);
+              actions = allActions.filter((act) => !act.startsWith('ui_') && !act.startsWith('spatial_editor/'));
+            }
+          } catch (_) {}
+          
+          if (!actions || actions.length === 0) {
+            actions = ['p1_up', 'p1_down', 'p2_up', 'p2_down', 'ui_left', 'ui_right'];
+          }
+        }
+
+        gessoLog('info', SERVER_NAME, `Launching scene: ${scenePath} for playtest...`);
+        const runRes = await editorBridge.invokeTool('run_scene', {
+          scene: scenePath,
+          wait_for_runtime: true
+        }) as any;
+
+        if (runRes && runRes.error) {
+          return { error: `Failed to run scene: ${runRes.error}` };
+        }
+
+        await new Promise((r) => setTimeout(r, 1000));
+        
+        try {
+          await editorBridge.invokeTool('clear_console_log', {});
+        } catch (_) {}
+
+        let lastLatent: number[] | null = null;
+        let freezeCount = 0;
+        const stepResults = [];
+        let totalCrashesOrErrors = 0;
+
+        for (let i = 0; i < steps; i++) {
+          const action = actions[Math.floor(Math.random() * actions.length)];
+          gessoLog('info', SERVER_NAME, `Step ${i + 1}/${steps} - Sending action: ${action}`);
+
+          await editorBridge.invokeTool('send_input', {
+            event: { type: 'action', action: action, pressed: true }
+          });
+          await new Promise((r) => setTimeout(r, 150));
+
+          await editorBridge.invokeTool('send_input', {
+            event: { type: 'action', action: action, pressed: false }
+          });
+          await new Promise((r) => setTimeout(r, 100));
+
+          const encodeRes = await handleJepaTool('jepa_encode_frame', {});
+          if (encodeRes && !encodeRes.error) {
+            const currentLatent = encodeRes.latent;
+            
+            if (lastLatent) {
+              const simRes = await handleJepaTool('jepa_scene_similarity', {
+                latent_1: lastLatent,
+                latent_2: currentLatent
+              });
+              
+              if (simRes && !simRes.error) {
+                const similarity = simRes.similarity;
+                const isFrozen = similarity > 0.9999;
+                if (isFrozen) {
+                  freezeCount++;
+                } else {
+                  freezeCount = 0;
+                }
+                
+                stepResults.push({
+                  step: i + 1,
+                  action: action,
+                  similarity: similarity,
+                  status: isFrozen ? 'no_visual_change' : 'active'
+                });
+              } else {
+                stepResults.push({ step: i + 1, action, error: 'Similarity calculation failed' });
+              }
+            } else {
+              stepResults.push({ step: i + 1, action, status: 'first_frame' });
+            }
+            
+            lastLatent = currentLatent;
+          } else {
+            stepResults.push({ step: i + 1, action, error: 'Frame encoding failed' });
+          }
+
+          try {
+            const errorRes = await editorBridge.invokeTool('get_errors', { include_warnings: false }) as any;
+            const errorsList = Array.isArray(errorRes) ? errorRes : (errorRes?.errors && Array.isArray(errorRes.errors) ? errorRes.errors : []);
+            if (errorsList.length > 0) {
+              totalCrashesOrErrors += errorsList.length;
+              gessoLog('warn', SERVER_NAME, `Detected ${errorsList.length} engine errors during playtest!`);
+            }
+          } catch (_) {}
+        }
+
+        let finalErrors: any[] = [];
+        try {
+          const errorRes = await editorBridge.invokeTool('get_errors', { include_warnings: false }) as any;
+          finalErrors = Array.isArray(errorRes) ? errorRes : (errorRes?.errors && Array.isArray(errorRes.errors) ? errorRes.errors : []);
+        } catch (_) {}
+
+        gessoLog('info', SERVER_NAME, `Stopping scene...`);
+        await editorBridge.invokeTool('stop_scene', {});
+
+        const potentialFreezeGlitch = freezeCount >= 5;
+
+        return {
+          success: true,
+          scene_path: scenePath,
+          steps_executed: steps,
+          results: stepResults,
+          potential_freeze_glitch: potentialFreezeGlitch,
+          total_errors_detected: totalCrashesOrErrors,
+          engine_errors: finalErrors
+        };
+      } catch (err: any) {
+        try {
+          await editorBridge.invokeTool('stop_scene', {});
+        } catch (_) {}
+        return { error: `Playtest failed: ${err.message}` };
       }
     }
 

@@ -66,5 +66,67 @@ export const jepaTools: ToolDefinition[] = [
       properties: {},
       required: []
     }
+  },
+  {
+    name: 'jepa_save_baseline',
+    description: 'Launches a scene, waits for the runtime connection, takes a screenshot, encodes the layout using the V-JEPA service, and saves it to `.gesso/baselines/<baseline_name>.json`. Always stops the scene before returning.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scene_path: {
+          type: 'string',
+          description: 'Godot scene path (e.g. "res://scenes/brick_breaker/menu.tscn")'
+        },
+        baseline_name: {
+          type: 'string',
+          description: 'Name of the baseline file to create (e.g. "menu_start")'
+        }
+      },
+      required: ['scene_path', 'baseline_name']
+    }
+  },
+  {
+    name: 'jepa_verify_scene',
+    description: 'Launches a scene, captures the visual frame, encodes it, loads the baseline representation, and calculates the similarity. Exits the scene afterward.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scene_path: {
+          type: 'string',
+          description: 'Godot scene path'
+        },
+        baseline_name: {
+          type: 'string',
+          description: 'Name of the baseline file to load'
+        },
+        threshold: {
+          type: 'number',
+          description: 'Cosine similarity threshold (default: 0.95)'
+        }
+      },
+      required: ['scene_path', 'baseline_name']
+    }
+  },
+  {
+    name: 'jepa_run_playtest',
+    description: 'Launches a scene and runs an automated playtest sequence. Simulates inputs, tracks visual similarity across frames to detect rendering/freeze glitches, and outputs a summary including Godot errors.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scene_path: {
+          type: 'string',
+          description: 'Godot scene path to playtest'
+        },
+        steps: {
+          type: 'number',
+          description: 'Number of interactive steps to execute (default: 15)'
+        },
+        threshold: {
+          type: 'number',
+          description: 'Similarity threshold for freeze/anomaly detection (default: 0.95)'
+        }
+      },
+      required: ['scene_path']
+    }
   }
 ];

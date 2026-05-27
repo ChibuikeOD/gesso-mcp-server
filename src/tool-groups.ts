@@ -197,6 +197,9 @@ const INTEGRATION_TOOLS = new Set([
   'jepa_scene_similarity',
   'jepa_imagine_next_state',
   'jepa_get_status',
+  'jepa_save_baseline',
+  'jepa_verify_scene',
+  'jepa_run_playtest',
 ]);
 
 function classifyRuntimeTool(name: string): string {
