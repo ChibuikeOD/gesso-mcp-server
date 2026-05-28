@@ -96,6 +96,7 @@ func _init_tools() -> void:
 		&"rename_file": [_script_tools, &"rename_file"],
 
 		&"get_project_settings": [_project_tools, &"get_project_settings"],
+		&"get_ai_context": [_project_tools, &"get_ai_context"],
 		&"list_settings": [_project_tools, &"list_settings"],
 		&"update_project_settings": [_project_tools, &"update_project_settings"],
 		&"list_viewport_presets": [_project_tools, &"list_viewport_presets"],
@@ -157,6 +158,7 @@ func set_mcp_client(client: Object) -> void:
 const _COROUTINE_TOOLS := {
 	"wait": true,
 	"capture_screen": true,
+	"run_scene": true,
 }
 
 func execute_tool(tool_name: String, args: Dictionary) -> Dictionary:
@@ -205,6 +207,8 @@ func execute_tool(tool_name: String, args: Dictionary) -> Dictionary:
 				result = await node.wait(args)
 			"capture_screen":
 				result = await node.capture_screen(args)
+			"run_scene":
+				result = await node.run_scene(args)
 			_:
 				push_error("[MCP] Coroutine tool '%s' has no direct dispatch case." % tool_name)
 				result = {&"ok": false, &"error": "Coroutine tool '%s' missing dispatch case" % tool_name}

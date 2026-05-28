@@ -128,5 +128,52 @@ export const jepaTools: ToolDefinition[] = [
       },
       required: ['scene_path']
     }
+  },
+  {
+    name: 'start_screen_recording',
+    description: 'Starts a memory-efficient background screen recording session. Automatically detects OS and GPU encoders, falling back to CPU software rendering or native screenshot polling.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: {
+          type: 'string',
+          enum: ['desktop', 'game', 'editor'],
+          description: 'Target to capture (default: "desktop")'
+        },
+        fps: {
+          type: 'number',
+          description: 'Framerate to capture, between 1 and 5 FPS (default: 2)'
+        }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'stop_screen_recording',
+    description: 'Stops the active screen recording session and stops saving frames to disk/memory.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      required: []
+    }
+  },
+  {
+    name: 'get_screen_context',
+    description: 'Retrieves the visual-semantic context of the last recorded session. Compiles a 2x2 storyboard grid of screenshots and/or fetches V-JEPA latent vectors.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        include_storyboard: {
+          type: 'boolean',
+          description: 'Compile and return a 2x2 tiled image of keyframes (default: true)'
+        },
+        include_vjepa: {
+          type: 'boolean',
+          description: 'Request 768-dimensional V-JEPA latent embeddings from the local service (default: true)'
+        }
+      },
+      required: []
+    }
   }
 ];
+

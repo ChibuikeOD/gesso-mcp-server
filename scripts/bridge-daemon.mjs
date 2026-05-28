@@ -54,7 +54,7 @@ async function dispatch(tool, args) {
               websocket_port: WEBSOCKET_PORT,
               control_port: CTRL_PORT,
               mode: live ? 'live' : 'headless_fallback',
-              project_path: PROJECT_ROOT,
+              project_path: status.projectPath || PROJECT_ROOT,
               connected_at: status.connectedAt?.toISOString() ?? null,
               pending_requests: status.pendingRequests,
               daemon: true,

@@ -1250,14 +1250,22 @@ func run_scene(args: Dictionary) -> Dictionary:
 	if block_until_started and not started:
 		var t0 := Time.get_ticks_msec()
 		while not started and (Time.get_ticks_msec() - t0) < startup_timeout_ms:
-			OS.delay_msec(50)
+			var tree := Engine.get_main_loop() as SceneTree
+			if tree:
+				await tree.process_frame
+			else:
+				OS.delay_msec(50)
 			started = ei.is_playing_scene()
 		poll_started_ms = Time.get_ticks_msec() - t0
 
 	if wait_for_runtime and started and not runtime_connected:
 		var t1 := Time.get_ticks_msec()
 		while not runtime_connected and (Time.get_ticks_msec() - t1) < startup_timeout_ms:
-			OS.delay_msec(100)
+			var tree := Engine.get_main_loop() as SceneTree
+			if tree:
+				await tree.process_frame
+			else:
+				OS.delay_msec(100)
 			runtime_connected = _runtime_is_connected()
 		poll_runtime_ms = Time.get_ticks_msec() - t1
 
@@ -1455,3 +1463,16 @@ func classdb_query(args: Dictionary) -> Dictionary:
 		result[&"signals"] = signals_list
 
 	return result
+
+
+# =============================================================================
+# get_ai_context
+# =============================================================================
+func get_ai_context(_args: Dictionary) -> Dictionary:
+	if not Engine.has_singleton("AIContextBridge"):
+		return {&"ok": false, &"error": "AIContextBridge singleton not registered in the engine build."}
+	
+	var bridge = Engine.get_singleton("AIContextBridge")
+	bridge.update_cache()
+	var context = bridge.get_last_context()
+	return {&"ok": true, &"context": context}

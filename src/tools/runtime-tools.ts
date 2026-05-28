@@ -41,6 +41,22 @@ export const runtimeTools: ToolDefinition[] = [
     }
   },
   {
+    "name": "game_press_button",
+    "description": "Press any node that acts as a button (inherits BaseButton, has a pressed signal, or responds to clicks) at runtime by its node path",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "nodePath": {
+          "type": "string",
+          "description": "Path to the button node (e.g. \"/root/MainMenu/VBoxContainer/StartButton\")"
+        }
+      },
+      "required": [
+        "nodePath"
+      ]
+    }
+  },
+  {
     "name": "game_key_press",
     "description": "Send a key press or input action to the running game",
     "inputSchema": {

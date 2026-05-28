@@ -200,6 +200,9 @@ const INTEGRATION_TOOLS = new Set([
   'jepa_save_baseline',
   'jepa_verify_scene',
   'jepa_run_playtest',
+  'start_screen_recording',
+  'stop_screen_recording',
+  'get_screen_context',
 ]);
 
 function classifyRuntimeTool(name: string): string {

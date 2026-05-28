@@ -26,6 +26,7 @@ import { allTools, toolExists } from './tools/index.js';
 import { getActiveTools, getActiveToolGroupId, isValidGroupId } from './tool-groups.js';
 import { ensureBridgeDaemon, invokeToolViaDaemon } from './daemon-client.js';
 import { EditorBridge } from './editor-bridge.js';
+import { ScreenRecorder } from './utils/screen-recorder.js';
 import {
   normalizeParameters,
   convertCamelToSnakeCase,
@@ -1983,6 +1984,37 @@ async function extractArchive(zipPath: string, destDir: string): Promise<boolean
     }
   }
 }
+async function handleMediaTool(name: string, args: any): Promise<any> {
+  if (name !== 'start_screen_recording' && name !== 'stop_screen_recording' && name !== 'get_screen_context') {
+    return null;
+  }
+
+  const recorder = ScreenRecorder.getInstance();
+
+  switch (name) {
+    case 'start_screen_recording': {
+      const target = args.target || 'desktop';
+      const fps = args.fps || 2;
+      const editorBridgeInvoke = async (toolName: string, toolArgs: any) => {
+        return await editorBridge.invokeTool(toolName, toolArgs);
+      };
+      return await recorder.startRecording(editorBridgeInvoke, target, fps);
+    }
+
+    case 'stop_screen_recording': {
+      return await recorder.stopRecording();
+    }
+
+    case 'get_screen_context': {
+      const includeStoryboard = args.include_storyboard !== false;
+      const includeVjepa = args.include_vjepa !== false;
+      return await recorder.compileContext(includeStoryboard, includeVjepa);
+    }
+
+    default:
+      return null;
+  }
+}
 async function handleJepaTool(name: string, args: any): Promise<any> {
   if (!name.startsWith('jepa_')) {
     return null;
@@ -2269,11 +2301,16 @@ async function handleJepaTool(name: string, args: any): Promise<any> {
         gessoLog('info', SERVER_NAME, `Launching scene: ${scenePath} for playtest...`);
         const runRes = await editorBridge.invokeTool('run_scene', {
           scene: scenePath,
-          wait_for_runtime: true
+          wait_for_runtime: true,
+          startup_timeout_ms: 25000
         }) as any;
 
         if (runRes && runRes.error) {
           return { error: `Failed to run scene: ${runRes.error}` };
+        }
+
+        if (runRes && !runRes.runtime_connected) {
+          return { error: `Playtest aborted: Godot runtime helper did not connect within timeout. Check get_errors and get_console_log.` };
         }
 
         await new Promise((r) => setTimeout(r, 1000));
@@ -2381,15 +2418,47 @@ async function handleJepaTool(name: string, args: any): Promise<any> {
   }
 }
 
-// Master execution dispatcher routing calls to WebSocket or Headless CLI
 export async function handleToolCall(name: string, toolArgs: Record<string, unknown>): Promise<any> {
   const normalizedArgs = normalizeParameters(toolArgs);
+
+  if (name === 'get_ai_context') {
+    if (editorBridge.isConnected()) {
+      try {
+        const result = await editorBridge.invokeTool('get_ai_context', toolArgs) as any;
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      } catch (err: any) {
+        gessoLog('warn', SERVER_NAME, `Failed to call get_ai_context via editor: ${err.message}. Reading cache file.`);
+      }
+    }
+    
+    const cachePath = join(PROJECT_ROOT, '.context_cache');
+    const mdPath = join(PROJECT_ROOT, 'ai_context.md');
+    let contextStr = '';
+    let source = '';
+    if (existsSync(cachePath)) {
+      contextStr = readFileSync(cachePath, 'utf8');
+      source = '.context_cache';
+    } else if (existsSync(mdPath)) {
+      contextStr = readFileSync(mdPath, 'utf8');
+      source = 'ai_context.md';
+    } else {
+      return createErrorResponse('No AI context cache file found. Open Godot editor with the Gesso AI module active to generate it.');
+    }
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: true, context: contextStr, source }, null, 2) }] };
+  }
 
   // 1. Direct Node-based Filesystem Tools (instant execution, works offline/online)
   const fsResult = await handleFsTool(name, normalizedArgs);
   if (fsResult !== null) {
     if (fsResult.error) return createErrorResponse(fsResult.error);
     return { content: [{ type: 'text', text: JSON.stringify(fsResult, null, 2) }] };
+  }
+
+  // 1.2. Screen Recording & Media Tools
+  const mediaResult = await handleMediaTool(name, normalizedArgs);
+  if (mediaResult !== null) {
+    if (mediaResult.error) return createErrorResponse(mediaResult.error);
+    return { content: [{ type: 'text', text: JSON.stringify(mediaResult, null, 2) }] };
   }
 
   // 1.5. JEPA World Model Tools
@@ -2623,7 +2692,7 @@ async function main() {
                 websocket_port: WEBSOCKET_PORT,
                 tool_group: TOOL_GROUP_ID,
                 mode: live ? 'live' : 'headless_fallback',
-                project_path: PROJECT_ROOT,
+                project_path: status.projectPath || PROJECT_ROOT,
                 connected_at: status.connectedAt?.toISOString() || null,
                 pending_requests: status.pendingRequests,
               },

@@ -24,6 +24,14 @@ export const projectTools: ToolDefinition[] = [
     }
   },
   {
+    name: 'get_ai_context',
+    description: 'Retrieve the detailed AI-ready scene hierarchy and context compiled natively by the Gesso AI Engine C++ module. If the editor is connected, it forces a fresh context scan and saves a new markdown snapshot at res://ai_context.md.',
+    inputSchema: {
+      type: 'object',
+      properties: {}
+    }
+  },
+  {
     name: 'get_input_map',
     description: 'Return the full InputMap: built-in actions (ui_*, spatial_editor/*) plus all project-defined actions from project.godot. Each action maps to an object with "events" (array of key/mouse/gamepad bindings) and optionally "deadzone". Use this before configure_input_map to see current bindings and deadzones.',
     inputSchema: {

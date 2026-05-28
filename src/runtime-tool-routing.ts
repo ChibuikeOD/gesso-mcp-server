@@ -26,6 +26,12 @@ export function isRuntimeRoutedTool(toolName: string, args?: Record<string, unkn
   if (RUNTIME_EDITOR_TOOLS.has(toolName)) return true;
   if (isGameRuntimeTool(toolName)) return true;
   if (toolName === 'list_signal_connections' && args?.source === 'runtime') return true;
+  if (toolName === 'capture_screen') {
+    const target = String(args?.target ?? 'game').toLowerCase().trim();
+    if (target === 'game' || target === 'runtime' || target === 'play' || target === 'debug') {
+      return true;
+    }
+  }
   return false;
 }
 
@@ -40,8 +46,10 @@ const RUNTIME_EDITOR_TOOLS = new Set<string>([
 
 export function resolveRuntimeToolCommand(toolName: string): string {
   if (toolName === 'test_input_sequence') return 'input_sequence';
+  if (toolName === 'capture_screen') return 'screenshot';
   if (GAME_COMMAND_ALIASES[toolName]) return GAME_COMMAND_ALIASES[toolName];
   if (LEGACY_RUNTIME_TOOL_ALIASES[toolName]) return LEGACY_RUNTIME_TOOL_ALIASES[toolName];
   if (toolName.startsWith('game_')) return toolName.slice(5);
   return toolName;
 }
+

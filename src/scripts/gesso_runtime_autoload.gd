@@ -128,9 +128,11 @@ func _handle_command(rid: String, command: String, params: Dictionary) -> void:
 	match command:
 		# Async commands (use await)
 		"screenshot":
-			await _cmd_screenshot()
+			await _cmd_screenshot(params)
 		"click":
 			await _cmd_click(params)
+		"press_button":
+			await _cmd_press_button(params)
 		"key_press":
 			await _cmd_key_press(params)
 		"input_sequence":
@@ -355,7 +357,7 @@ func _handle_command(rid: String, command: String, params: Dictionary) -> void:
 			_cmd_video(params)
 		# Editor MCP compatibility (same wire names as legacy MCPRuntime)
 		"take_screenshot":
-			await _cmd_screenshot()
+			await _cmd_screenshot(params)
 		"send_input":
 			_cmd_send_input(params)
 		"query_runtime_node":
@@ -399,21 +401,55 @@ func _send_response_raw(data: Dictionary) -> void:
 
 
 # --- Screenshot ---
-func _cmd_screenshot() -> void:
+func _cmd_screenshot(params: Dictionary = {}) -> void:
 	# Wait one frame so the viewport is fully rendered
 	await get_tree().process_frame
+	
 	var image: Image = get_viewport().get_texture().get_image()
-	if image == null:
+	
+	if image == null or image.is_empty():
 		_send_response({"error": "Failed to capture screenshot"})
 		return
-	var png_buffer: PackedByteArray = image.save_png_to_buffer()
-	var base64_str: String = Marshalls.raw_to_base64(png_buffer)
+
+	# Handle saving to file if save_to is provided or if we want standard behavior
+	var save_to: String = params.get("save_to", "")
+	var return_base64: bool = params.get("return_base64", true) # Default to true for JEPA and compatibility
+	
+	const SCREENSHOT_CACHE_DIR := "res://addons/godot_mcp/cache/screenshots/"
+	var resource_path := save_to
+	if resource_path.is_empty():
+		resource_path = "%sscreenshot_%d.png" % [
+			SCREENSHOT_CACHE_DIR, Time.get_ticks_msec()
+		]
+	elif not resource_path.begins_with("res://") and not resource_path.begins_with("user://"):
+		resource_path = "res://" + resource_path
+
+	var abs_path := ProjectSettings.globalize_path(resource_path)
+	var dir := abs_path.get_base_dir()
+	if not DirAccess.dir_exists_absolute(dir):
+		DirAccess.make_dir_recursive_absolute(dir)
+
+	var err := image.save_png(abs_path)
+	if err != OK:
+		_send_response({"error": "save_png failed: %s at %s" % [error_string(err), abs_path]})
+		return
+
+	var base64_str: String = ""
+	if return_base64:
+		var png_buffer: PackedByteArray = image.save_png_to_buffer()
+		base64_str = Marshalls.raw_to_base64(png_buffer)
+
 	_send_response({
 		"success": true,
-		"data": base64_str,
+		"ok": true,
+		"resource_path": resource_path,
+		"absolute_path": abs_path,
 		"width": image.get_width(),
-		"height": image.get_height()
+		"height": image.get_height(),
+		"data": base64_str,
+		"base64_png": base64_str
 	})
+
 
 
 # --- Click ---
@@ -443,6 +479,97 @@ func _cmd_click(params: Dictionary) -> void:
 	Input.parse_input_event(release_event)
 
 	_send_response({"success": true, "clicked": {"x": x, "y": y, "button": button}})
+
+
+# --- Press Button ---
+func _cmd_press_button(params: Dictionary) -> void:
+	var node_path: String = params.get("node_path", "")
+	if node_path.is_empty():
+		_send_response({"error": "node_path is required"})
+		return
+
+	var node: Node = get_tree().root.get_node_or_null(node_path)
+	if node == null:
+		_send_response({"error": "Node not found at path: %s" % node_path})
+		return
+
+	# 1. Try C++ native Gesso Engine implementation if available
+	if Engine.has_singleton("AIContextBridge"):
+		var bridge = Engine.get_singleton("AIContextBridge")
+		if bridge.has_method("press_node_by_path"):
+			var success = bridge.press_node_by_path(node_path)
+			if success:
+				_send_response({"success": true, "method": "native_c++", "node_path": node_path})
+				return
+			else:
+				_send_response({"error": "Native press_node_by_path failed or node is disabled at path: %s" % node_path})
+				return
+
+	# 2. GDScript Fallback Implementation
+	var pressed_ok = false
+
+	# Case A: BaseButton subclass
+	if node is BaseButton:
+		if node.disabled:
+			_send_response({"error": "Button is disabled at path: %s" % node_path})
+			return
+		
+		if node.toggle_mode:
+			node.button_pressed = not node.button_pressed
+			node.toggled.emit(node.button_pressed)
+		
+		node.button_down.emit()
+		node.pressed.emit()
+		node.button_up.emit()
+		pressed_ok = true
+
+	# Case B: Custom pressed signal
+	elif node.has_signal("pressed"):
+		node.pressed.emit()
+		pressed_ok = true
+
+	# Case C: Click simulation fallback
+	var click_pos: Vector2
+	var has_pos = false
+
+	if node is Control:
+		if node.is_visible_in_tree():
+			click_pos = node.global_position + node.size / 2.0
+			has_pos = true
+	elif node is Node2D:
+		if node.is_visible_in_tree():
+			click_pos = node.global_position
+			has_pos = true
+	elif node is Node3D:
+		if node.is_visible_in_tree():
+			var vp = node.get_viewport()
+			var cam = vp.get_camera_3d() if vp else null
+			if cam:
+				click_pos = cam.unproject_position(node.global_position)
+				has_pos = true
+
+	if has_pos:
+		var press_event := InputEventMouseButton.new()
+		press_event.position = click_pos
+		press_event.global_position = click_pos
+		press_event.button_index = MOUSE_BUTTON_LEFT
+		press_event.pressed = true
+		Input.parse_input_event(press_event)
+
+		await get_tree().process_frame
+
+		var release_event := InputEventMouseButton.new()
+		release_event.position = click_pos
+		release_event.global_position = click_pos
+		release_event.button_index = MOUSE_BUTTON_LEFT
+		release_event.pressed = false
+		Input.parse_input_event(release_event)
+		pressed_ok = true
+
+	if pressed_ok:
+		_send_response({"success": true, "method": "gdscript_fallback", "node_path": node_path})
+	else:
+		_send_response({"error": "Failed to press node (not a button, no press signal, or position could not be determined) at path: %s" % node_path})
 
 
 # --- Key Press ---
@@ -4564,6 +4691,12 @@ func _run_input_sequence_step(index: int, step: Dictionary) -> Dictionary:
 			if event == null:
 				return {"index": index, "type": step_type, "error": "Could not build InputEvent"}
 			Input.parse_input_event(event)
+			if event is InputEventAction:
+				var act := event as InputEventAction
+				if act.pressed:
+					Input.action_press(act.action)
+				else:
+					Input.action_release(act.action)
 			return {"index": index, "type": "send_input", "dispatched": event.get_class()}
 		_:
 			return {"index": index, "error": "Unknown step type: %s" % step_type}
@@ -4748,6 +4881,12 @@ func _cmd_send_input(params: Dictionary) -> void:
 		_send_response({"error": "Could not construct InputEvent from: %s" % str(event_desc)})
 		return
 	Input.parse_input_event(event)
+	if event is InputEventAction:
+		var act := event as InputEventAction
+		if act.pressed:
+			Input.action_press(act.action)
+		else:
+			Input.action_release(act.action)
 	_send_response({"success": true, "dispatched": event.get_class(), "event": event_desc})
 
 
