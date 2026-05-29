@@ -1,12 +1,12 @@
-# Gesso MCP Server for Godot 4.x
+# G-MCP: Model Context Protocol Server for Godot 4.x
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Model Context Protocol](https://img.shields.io/badge/MCP-1.25.2-blue)](https://modelcontextprotocol.io)
 [![Godot Engine](https://img.shields.io/badge/Godot-4.x-green.svg)](https://godotengine.org)
 
-**Gesso MCP Server** is a Model Context Protocol (MCP) server that integrates directly with the **Godot 4.x Engine**, empowering AI coding agents (like Claude Desktop, Cursor, or custom agents) with unparalleled capabilities for **runtime debugging**, visual game inspections, automated playtesting, input emulation, and workspace management.
+**G-MCP** is a Model Context Protocol (MCP) server that integrates directly with the **Godot 4.x Engine**, empowering AI coding agents (like Claude Desktop, Cursor, or custom agents) with unparalleled capabilities for **runtime debugging**, visual game inspections, automated playtesting, input emulation, and workspace management.
 
-With Gesso, an AI agent can build features, inspect live scenes, execute GDScript expressions on a running game, take screenshots to visually confirm layouts, dispatch keyboard/mouse input, and debug errors dynamically in real-time.
+With G-MCP, an AI agent can build features, inspect live scenes, execute GDScript expressions on a running game, take screenshots to visually confirm layouts, dispatch keyboard/mouse input, and debug errors dynamically in real-time.
 
 ---
 
@@ -24,11 +24,11 @@ With Gesso, an AI agent can build features, inspect live scenes, execute GDScrip
 
 ## 🏗️ Architecture & Dual-Execution Modes
 
-Gesso operates as a **hybrid server** to provide maximum reliability, whether the game is actively running, open in the editor, or closed:
+G-MCP operates as a **hybrid server** to provide maximum reliability, whether the game is actively running, open in the editor, or closed:
 
 ```mermaid
 graph TD
-    Agent[AI Agent / MCP Client] -->|Stdio| Server[Gesso MCP Server]
+    Agent[AI Agent / MCP Client] -->|Stdio| Server[G-MCP Server]
     
     subgraph Live Mode (Connected)
         Server -->|WebSocket port 6505| Editor[Godot Editor Plugin]
@@ -42,7 +42,7 @@ graph TD
 ```
 
 1. **Live/Active Mode (WebSocket Bridge):** 
-   When the Godot Editor is open with the Gesso plugin enabled, or the game is running, the server connects over a local WebSocket (**port 6505**). This allows the agent to communicate *instantly* with the editor and live game session (required for runtime debugging, screen capture, and input dispatch).
+   When the Godot Editor is open with the G-MCP plugin enabled, or the game is running, the server connects over a local WebSocket (**port 6505**). This allows the agent to communicate *instantly* with the editor and live game session (required for runtime debugging, screen capture, and input dispatch).
 2. **Headless Fallback Mode (CLI execution):** 
    If the editor is closed, the server automatically falls back to invoking Godot in headless CLI mode (`--headless`) using the included `gesso_headless_runner.gd` script. Filesystem, scene-tree generation, and resource tools still work seamlessly.
 
@@ -59,10 +59,10 @@ graph TD
 
 ## 🛠️ Installation & Setup
 
-### 1. Build the Gesso MCP Server
+### 1. Build the G-MCP Server
 Clone the repository and install dependencies, then build the TypeScript compiler:
 ```bash
-cd gesso-mcp-server
+cd g-mcp
 npm install
 npm run build
 ```
@@ -71,13 +71,13 @@ This generates compiled JavaScript under `dist/` and copies necessary GDScript r
 ### 2. Configure the MCP Client
 
 #### Claude Desktop
-Add Gesso to your configuration file (Windows: `%APPDATA%\Claude\claude_desktop_config.json`, macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`):
+Add G-MCP to your configuration file (Windows: `%APPDATA%\Claude\claude_desktop_config.json`, macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`):
 ```json
 {
   "mcpServers": {
-    "gesso-mcp-server": {
+    "g-mcp-server": {
       "command": "node",
-      "args": ["C:/Users/chibu/OneDrive/Documents/Gesso/gesso-mcp-server/dist/index.js"],
+      "args": ["C:/Users/chibu/OneDrive/Documents/Gesso/g-mcp/dist/index.js"],
       "env": {
         "GESSO_PORT": "6505",
         "GESSO_LOG_LEVEL": "warn"
@@ -93,10 +93,10 @@ Add Gesso to your configuration file (Windows: `%APPDATA%\Claude\claude_desktop_
 
 #### Cursor (grouped servers — recommended)
 
-Cursor exposes only ~**40 MCP tools** per chat. Gesso registers ~200 tools, so use the **router + groups** layout:
+Cursor exposes only ~**40 MCP tools** per chat. G-MCP registers ~200 tools, so use the **router + groups** layout:
 
 ```bash
-cd gesso-mcp-server
+cd g-mcp
 npm run build
 npm run mcp:cursor          # writes ../.cursor/mcp.json (router + workspace/scenes/editor)
 npm run mcp:cursor:all      # also writes ../.cursor/mcp.gesso-all-groups.json
@@ -117,14 +117,14 @@ All group servers share one **bridge daemon** (`GESSO_CTRL_CLIENT=1`) on port 65
 #### Cursor (single monolithic server — legacy)
 
 1. Go to **Cursor Settings** > **Features** > **MCP**.
-2. Add a server with **Command:** `node .../gesso-mcp-server/dist/index.js` (no `GESSO_TOOL_GROUP`).
+2. Add a server with **Command:** `node .../g-mcp/dist/index.js` (no `GESSO_TOOL_GROUP`).
 3. Disable unused tools manually in the MCP UI (required for ~200 tools).
 
 ---
 
 ## 🎮 Godot Project Integration (The Addon)
 
-To access **live editor features** and **runtime debugging**, you must add the Gesso Editor Addon and Autoload script to your Godot game project.
+To access **live editor features** and **runtime debugging**, you must add the G-MCP Editor Addon and Autoload script to your Godot game project.
 
 > [!IMPORTANT]
 > The MCP server looks for `project.godot` to resolve paths. By default, it resolves to the folder where the server process is launched. You can set the target game project directory by defining the `GESSO_PROJECT_ROOT` environment variable in your MCP configuration.
@@ -160,7 +160,7 @@ To access **live editor features** and **runtime debugging**, you must add the G
 
 ## 🧰 Complete Tool Catalog
 
-The Gesso MCP Server registers the following tools with the client:
+The G-MCP Server registers the following tools with the client:
 
 ### 1. Runtime Debugging & Control
 These tools inspect and control the game while it is running. Most of these require play mode (`run_scene` with `wait_for_runtime=true` first).

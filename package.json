@@ -1,12 +1,12 @@
 {
-  "name": "gesso-mcp-server",
+  "name": "g-mcp-server",
   "version": "0.1.0",
-  "mcpName": "gesso-mcp-server",
+  "mcpName": "g-mcp-server",
   "description": "Hybrid MCP server for Godot 4.x game engine integration",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "gesso-mcp-server": "dist/index.js"
+    "g-mcp-server": "dist/index.js"
   },
   "files": [
     "dist",
@@ -29,7 +29,7 @@
     "godot",
     "game-development",
     "ai-agent",
-    "gesso"
+    "g-mcp"
   ],
   "license": "MIT",
   "dependencies": {
